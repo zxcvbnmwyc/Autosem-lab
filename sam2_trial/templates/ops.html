@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="AutoSEM 运行数据与推理耗时概览。">
+    <meta name="robots" content="noindex, nofollow">
+    <title>运营概览 · AutoSEM</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='ops.css', v=static_version) }}">
+  </head>
+  <body>
+    <a class="skip-link" href="#ops-main">跳到运营数据</a>
+
+    <header class="topbar">
+      <div class="topbar__inner">
+        <a class="brand" href="/" aria-label="AutoSEM 首页">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>AutoSEM</span>
+        </a>
+        <span class="topbar__divider" aria-hidden="true"></span>
+        <p class="topbar__label">运营概览</p>
+        <div class="topbar__actions">
+          <span id="connection-status" class="connection-status connection-status--idle" aria-live="polite">
+            <i aria-hidden="true"></i><span>等待连接</span>
+          </span>
+          <a class="workspace-link" href="/workspace">返回工作台 <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </header>
+
+    <main id="ops-main" class="ops-shell">
+      <section class="page-intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">PRIVATE OPERATIONS VIEW</p>
+          <h1 id="page-title">看清真实使用，<br>也看清等待发生在哪。</h1>
+          <p>统计窗口内的访问、分割与推理耗时。数据会在刷新时重新读取，不保存用户的图片或输入内容。</p>
+        </div>
+        <aside class="privacy-card">
+          <span class="privacy-card__icon" aria-hidden="true">⌁</span>
+          <div>
+            <strong>仅限运营查看</strong>
+            <p>访问凭证仅保存在当前浏览器标签页中，关闭标签页后自动清除。</p>
+          </div>
+        </aside>
+      </section>
+
+      <section id="auth-card" class="auth-card" aria-labelledby="auth-title">
+        <div class="auth-card__copy">
+          <span class="section-index">01</span>
+          <div>
+            <h2 id="auth-title">连接运营数据</h2>
+            <p>输入运营访问令牌后，即可读取汇总指标。令牌不会写入服务器日志或本地长期存储。</p>
+          </div>
+        </div>
+        <form id="token-form" class="token-form" novalidate>
+          <label class="sr-only" for="ops-token">运营访问令牌</label>
+          <div class="token-field">
+            <input id="ops-token" name="ops-token" type="password" autocomplete="off" spellcheck="false" placeholder="输入运营访问令牌">
+            <button id="token-visibility" class="icon-button" type="button" aria-label="显示令牌" aria-pressed="false" title="显示令牌">◉</button>
+          </div>
+          <button id="token-submit" class="button button--primary" type="submit">保存并读取 <span aria-hidden="true">→</span></button>
+        </form>
+        <p id="auth-message" class="auth-message" aria-live="polite">令牌只会保存在本次浏览会话中。</p>
+      </section>
+
+      <section class="controls" aria-label="数据范围与刷新">
+        <div class="period-control" role="group" aria-label="选择统计时间范围">
+          <span class="control-label">统计窗口</span>
+          <div class="period-buttons">
+            <button class="period-button" type="button" data-window-hours="24" aria-pressed="true">近 24 小时</button>
+            <button class="period-button" type="button" data-window-hours="168" aria-pressed="false">近 7 天</button>
+            <button class="period-button" type="button" data-window-hours="720" aria-pressed="false">近 30 天</button>
+          </div>
+        </div>
+        <div class="refresh-control">
+          <p id="updated-at" aria-live="polite">尚未读取数据</p>
+          <button id="refresh-button" class="button button--secondary" type="button" disabled><span class="refresh-icon" aria-hidden="true">↻</span> 刷新数据</button>
+        </div>
+      </section>
+
+      <section id="notice" class="notice" hidden role="status" aria-live="polite"></section>
+
+      <section class="summary-section" aria-labelledby="summary-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">USAGE SNAPSHOT</p>
+            <h2 id="summary-title">使用概览</h2>
+          </div>
+          <p id="window-copy" class="window-copy">选择时间范围后显示汇总</p>
+        </div>
+
+        <div class="metric-grid" aria-live="polite" aria-busy="false">
+          <article class="metric-card">
+            <span class="metric-card__label">活跃会话</span>
+            <strong id="metric-sessions" class="metric-card__value">—</strong>
+            <p>去重后的浏览器会话</p>
+          </article>
+          <article class="metric-card">
+            <span class="metric-card__label">页面访问</span>
+            <strong id="metric-page-views" class="metric-card__value">—</strong>
+            <p>工作台与公开页面访问</p>
+          </article>
+          <article class="metric-card metric-card--green">
+            <span class="metric-card__label">图片上传</span>
+            <strong id="metric-uploads" class="metric-card__value">—</strong>
+            <p>已接受的图片文件</p>
+          </article>
+          <article class="metric-card metric-card--green">
+            <span class="metric-card__label">分割任务</span>
+            <strong id="metric-segment-jobs" class="metric-card__value">—</strong>
+            <p id="metric-segment-note">等待数据</p>
+          </article>
+          <article class="metric-card metric-card--warm">
+            <span class="metric-card__label">Qwen 定位</span>
+            <strong id="metric-qwen" class="metric-card__value">—</strong>
+            <p>自动语义定位请求</p>
+          </article>
+          <article class="metric-card metric-card--warm">
+            <span class="metric-card__label">Agent 运行</span>
+            <strong id="metric-agent" class="metric-card__value">—</strong>
+            <p>引导式分割流程</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="timing-section" aria-labelledby="timing-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LATENCY BREAKDOWN</p>
+            <h2 id="timing-title">速度与等待</h2>
+          </div>
+          <p class="timing-note">耗时以服务端记录为准；P90 表示 90% 的请求不超过该时长。</p>
+        </div>
+
+        <div class="timing-grid" aria-live="polite">
+          <article class="timing-card">
+            <div class="timing-card__head"><span class="timing-dot timing-dot--blue" aria-hidden="true"></span><h3>Qwen 定位</h3></div>
+            <dl>
+              <div><dt>中位数</dt><dd id="qwen-median">—</dd></div>
+              <div><dt>P90</dt><dd id="qwen-p90">—</dd></div>
+              <div><dt>样本数</dt><dd id="qwen-count">—</dd></div>
+            </dl>
+            <p>从发起视觉定位到收到候选区域。</p>
+          </article>
+          <article class="timing-card timing-card--featured">
+            <div class="timing-card__head"><span class="timing-dot timing-dot--green" aria-hidden="true"></span><h3>SAM2 分割</h3></div>
+            <dl>
+              <div><dt>中位数</dt><dd id="sam2-median">—</dd></div>
+              <div><dt>P90</dt><dd id="sam2-p90">—</dd></div>
+              <div><dt>样本数</dt><dd id="sam2-count">—</dd></div>
+            </dl>
+            <p>含图片处理、SAM2 推理与结果写入。</p>
+          </article>
+          <article id="sam2-core-card" class="timing-card" hidden>
+            <div class="timing-card__head"><span class="timing-dot timing-dot--green" aria-hidden="true"></span><h3>SAM2 核心推理</h3></div>
+            <dl>
+              <div><dt>中位数</dt><dd id="sam2-core-median">—</dd></div>
+              <div><dt>P90</dt><dd id="sam2-core-p90">—</dd></div>
+              <div><dt>样本数</dt><dd id="sam2-core-count">—</dd></div>
+            </dl>
+            <p>仅模型预测的墙钟时间；没有该指标时不显示。</p>
+          </article>
+          <article class="timing-card">
+            <div class="timing-card__head"><span class="timing-dot timing-dot--yellow" aria-hidden="true"></span><h3>排队等待</h3></div>
+            <dl>
+              <div><dt>中位数</dt><dd id="queue-median">—</dd></div>
+              <div><dt>P90</dt><dd id="queue-p90">—</dd></div>
+              <div><dt>样本数</dt><dd id="queue-count">—</dd></div>
+            </dl>
+            <p>任务进入队列到开始执行的等待时间。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="events-section" aria-labelledby="events-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">RECENT ACTIVITY</p>
+            <h2 id="events-title">最近活动</h2>
+          </div>
+          <p class="events-note">不显示图片、描述或其他用户内容。</p>
+        </div>
+        <div class="events-card">
+          <div id="events-empty" class="events-empty">读取数据后，这里会显示最近的匿名事件。</div>
+          <ol id="events-list" class="events-list" hidden></ol>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>AutoSEM · Private Operations</span>
+      <a href="/privacy">隐私说明</a>
+    </footer>
+    <script src="{{ url_for('static', filename='ops.js', v=static_version) }}"></script>
+  </body>
+</html>

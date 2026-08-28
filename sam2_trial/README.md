@@ -18,6 +18,7 @@ AutoSEM 是一个本地优先的图片分割网站：用户上传一张图片并
 - `/workspace`：分割 Agent、Qwen 自动定位、手动点/框、后台任务、质量复核与结果下载。
 - `/guide`：使用指南。
 - `/privacy`：本地处理与可选云端定位的边界说明。
+- `/ops`：令牌保护的运营面板，显示匿名会话、请求量、成功率、Qwen 与 SAM2 耗时。
 - `/healthz`、`/readyz`：部署健康检查。
 - `/api/runtime/status`：不暴露路径或密钥的本地引擎状态。
 
@@ -98,6 +99,19 @@ DASHSCOPE_MODEL=qwen3-vl-flash
 
 上传图片、任务元数据与结果默认保留 72 小时，可在 `.env` 中通过 `DATA_TTL_HOURS` 修改。设为 `0` 会关闭自动清理；上传触发的清理扫描受 `CLEANUP_INTERVAL_SECONDS` 节流。每个浏览器有自己的签名会话 cookie，不能通过猜测 UUID 访问另一个浏览器的上传或结果；这仍是首版的轻量隔离，公开多用户产品应增加真正的登录和对象存储权限策略。
 
+## 运营面板
+
+`/ops` 是单独的管理员页面，不会出现在普通用户工作区。它以 `X-Ops-Token` 请求头读取聚合数据，浏览器只在当前会话中保存你输入的访问码，访问码不会写入 URL、Git 或用户任务数据。
+
+在服务器 `.env` 设置一个高强度访问码：
+
+```ini
+OPS_DASHBOARD_TOKEN=请填随机长字符串
+METRICS_RETENTION_DAYS=30
+```
+
+然后访问 `/ops` 并输入访问码。面板记录的是匿名会话哈希、事件类型、耗时和结果状态；不会记录图片、文件名、文字描述、Qwen 响应、原始 IP 或访问码。`SAM2` 面板时间是排队结束后的整段任务时间（读图、预处理、SAM2 和写出结果）；`Qwen` 时间是一次自动定位请求的端到端耗时。统计从本版本部署后开始累积。
+
 ## 容器化与服务器部署
 
 `Dockerfile`、`docker-compose.yml` 和 `nginx/default.conf` 已准备好 CPU 首版部署：
@@ -112,6 +126,7 @@ DASHSCOPE_MODEL=qwen3-vl-flash
 
 1. 把 Tiny 权重放到 `sam2_trial/models/sam2.1_hiera_tiny.pt`。
 2. 在服务器的 `.env` 里设置 Qwen 密钥（如需要）和高强度 `APP_SECRET_KEY`。
+   若要启用 `/ops`，同时设置 `OPS_DASHBOARD_TOKEN`；不要把该访问码发给普通访客。
 3. 确认 `docker compose` 可用后，在 `sam2_trial` 目录运行：
 
 ```bash

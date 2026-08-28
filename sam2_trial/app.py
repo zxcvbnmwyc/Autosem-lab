@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import math
 import os
 import queue
 import re
 import shutil
+import statistics
 import sys
 import threading
 import time
@@ -48,7 +50,7 @@ load_local_dotenv(APP_DIR / ".env")
 
 def _static_asset_version() -> str:
     digest = hashlib.sha256()
-    for asset_name in ("style.css", "app.js"):
+    for asset_name in ("style.css", "app.js", "ops.css", "ops.js"):
         try:
             digest.update((APP_DIR / "static" / asset_name).read_bytes())
         except OSError:
@@ -76,6 +78,8 @@ GROUNDING_DIR = DATA_DIR / "groundings"
 AGENT_RUN_DIR = DATA_DIR / "agent-runs"
 JOBS_DIR = DATA_DIR / "jobs"
 RESULTS_DIR = DATA_DIR / "results"
+METRICS_DIR = DATA_DIR / "metrics"
+METRICS_EVENTS_PATH = METRICS_DIR / "events.jsonl"
 
 DEFAULT_SAM2_SOURCE = r"C:\Users\11609\Documents\Autosem\vendor\sam2-main"
 DEFAULT_TINY_CHECKPOINT = r"C:\Users\11609\Documents\Autosem\models\sam2.1_hiera_tiny.pt"
@@ -105,6 +109,8 @@ RESULT_PREVIEW_MAX_EDGE = _environment_int("RESULT_PREVIEW_MAX_EDGE", 1200, 256)
 IMAGE_JPEG_QUALITY = min(_environment_int("IMAGE_JPEG_QUALITY", 92, 50), 95)
 PREVIEW_JPEG_QUALITY = min(_environment_int("PREVIEW_JPEG_QUALITY", 84, 40), 92)
 CLEANUP_INTERVAL_SECONDS = _environment_int("CLEANUP_INTERVAL_SECONDS", 15 * 60, 60)
+METRICS_RETENTION_DAYS = _environment_int("METRICS_RETENTION_DAYS", 30, 1)
+OPS_DASHBOARD_TOKEN = os.environ.get("OPS_DASHBOARD_TOKEN", "").strip()
 MAX_PROMPT_POINTS = 24
 MAX_DESCRIPTION_CHARS = 500
 AGENT_AUTO_SEGMENT_CONFIDENCE = 0.75
@@ -114,6 +120,14 @@ AGENT_MAX_MASK_AREA_RATIO = 0.92
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 IMAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESULT_FILE_NAMES = {"mask.png", "overlay.png", "preview.jpg", "contours.png", "result.json"}
+METRIC_EVENT_KINDS = {"page_view", "upload", "grounding", "agent_run", "segment_job"}
+_METRICS_SESSION_SALT = (
+    os.environ.get("METRICS_SESSION_SALT")
+    or os.environ.get("APP_SECRET_KEY")
+    or "autosem-metrics-local-salt"
+).encode("utf-8")
+_metrics_lock = threading.Lock()
+_last_metrics_cleanup_at = 0.0
 
 if str(SAM2_SOURCE) not in sys.path:
     sys.path.insert(0, str(SAM2_SOURCE))
@@ -155,6 +169,201 @@ def _json_read(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _metrics_session_hash(owner_id: str) -> str:
+    """Create a stable, non-reversible session identifier for aggregate metrics."""
+    return hmac.new(_METRICS_SESSION_SALT, owner_id.encode("utf-8"), hashlib.sha256).hexdigest()[:20]
+
+
+def _metric_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _metric_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return max(0.0, float(value))
+
+
+def _record_metric(
+    kind: str,
+    *,
+    owner_id: str | None = None,
+    status: str = "succeeded",
+    duration_ms: float | None = None,
+    queue_wait_ms: float | None = None,
+) -> None:
+    """Append one privacy-preserving, best-effort operational event.
+
+    Events deliberately omit image names, prompts, model responses and raw owner
+    identifiers.  Telemetry failure must never affect a user request.
+    """
+    if kind not in METRIC_EVENT_KINDS:
+        return
+    event: dict[str, Any] = {
+        "timestamp": _utc_now(),
+        "kind": kind,
+        "status": status[:48],
+        "session_hash": _metrics_session_hash(owner_id) if owner_id and IMAGE_ID_RE.fullmatch(owner_id) else None,
+    }
+    numeric_duration = _metric_number(duration_ms)
+    event["duration_ms"] = round(numeric_duration, 2) if numeric_duration is not None else 0.0
+    numeric_queue_wait = _metric_number(queue_wait_ms)
+    event["queue_wait_ms"] = round(numeric_queue_wait, 2) if numeric_queue_wait is not None else 0.0
+    try:
+        with _metrics_lock:
+            METRICS_DIR.mkdir(parents=True, exist_ok=True)
+            with METRICS_EVENTS_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        # Operational metrics must not make image handling or inference unreliable.
+        return
+    _maybe_cleanup_metrics()
+
+
+def _read_metric_events() -> list[dict[str, Any]]:
+    try:
+        with _metrics_lock:
+            lines = METRICS_EVENTS_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("kind") not in METRIC_EVENT_KINDS:
+            continue
+        if _metric_timestamp(event.get("timestamp")) is None:
+            continue
+        events.append(event)
+    return events
+
+
+def _duration_summary(values: list[float]) -> dict[str, float | int | None]:
+    ordered = sorted(value for value in values if value >= 0)
+    if not ordered:
+        return {
+            "count": 0,
+            "min_ms": None,
+            "average_ms": None,
+            "median_ms": None,
+            "p90_ms": None,
+            "max_ms": None,
+        }
+    p90_index = max(0, math.ceil(len(ordered) * 0.9) - 1)
+    return {
+        "count": len(ordered),
+        "min_ms": round(ordered[0], 2),
+        "average_ms": round(statistics.fmean(ordered), 2),
+        "median_ms": round(statistics.median(ordered), 2),
+        "p90_ms": round(ordered[p90_index], 2),
+        "max_ms": round(ordered[-1], 2),
+    }
+
+
+def _metrics_report(window_hours: int) -> dict[str, Any]:
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    events = [
+        event
+        for event in _read_metric_events()
+        if (timestamp := _metric_timestamp(event.get("timestamp"))) is not None and timestamp >= cutoff
+    ]
+    active_sessions = {
+        event.get("session_hash")
+        for event in events
+        if isinstance(event.get("session_hash"), str) and event.get("session_hash")
+    }
+    by_kind = {kind: [event for event in events if event.get("kind") == kind] for kind in METRIC_EVENT_KINDS}
+    segment_events = by_kind["segment_job"]
+    segment_succeeded = sum(event.get("status") in {"success", "succeeded"} for event in segment_events)
+    grounding_durations = [
+        value for event in by_kind["grounding"] if (value := _metric_number(event.get("duration_ms"))) is not None
+    ]
+    sam2_job_durations = [
+        value for event in segment_events if (value := _metric_number(event.get("duration_ms"))) is not None
+    ]
+    queue_waits = [
+        value for event in segment_events if (value := _metric_number(event.get("queue_wait_ms"))) is not None
+    ]
+    recent_events = [
+        {
+            "timestamp": event["timestamp"],
+            "kind": event["kind"],
+            "status": event.get("status", "unknown"),
+            "duration_ms": _metric_number(event.get("duration_ms")),
+            "queue_wait_ms": _metric_number(event.get("queue_wait_ms")),
+        }
+        for event in sorted(events, key=lambda item: str(item["timestamp"]), reverse=True)[:12]
+    ]
+    return {
+        "generated_at": _utc_now(),
+        "window_hours": window_hours,
+        "retention_days": METRICS_RETENTION_DAYS,
+        "summary": {
+            "active_sessions": len(active_sessions),
+            "page_views": len(by_kind["page_view"]),
+            "uploads": len(by_kind["upload"]),
+            "grounding_requests": len(by_kind["grounding"]),
+            "segment_jobs": len(segment_events),
+            "segment_succeeded": segment_succeeded,
+            "segment_success_rate": round((segment_succeeded / len(segment_events)) * 100, 1) if segment_events else None,
+            "agent_runs": len(by_kind["agent_run"]),
+        },
+        "timings": {
+            "grounding_ms": _duration_summary(grounding_durations),
+            "sam2_ms": _duration_summary(sam2_job_durations),
+            "queue_wait_ms": _duration_summary(queue_waits),
+        },
+        "queue": {"depth": job_manager.queue_depth, "capacity": job_manager.queue_capacity},
+        "recent_events": recent_events,
+    }
+
+
+def _cleanup_expired_metrics() -> None:
+    """Compact only old aggregate telemetry events, never user images or prompts."""
+    cutoff = datetime.now(UTC) - timedelta(days=METRICS_RETENTION_DAYS)
+    try:
+        with _metrics_lock:
+            if not METRICS_EVENTS_PATH.is_file():
+                return
+            kept: list[str] = []
+            changed = False
+            for line in METRICS_EVENTS_PATH.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    changed = True
+                    continue
+                timestamp = _metric_timestamp(event.get("timestamp") if isinstance(event, dict) else None)
+                if timestamp is None or timestamp < cutoff:
+                    changed = True
+                    continue
+                kept.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+            if changed:
+                temporary = METRICS_EVENTS_PATH.with_suffix(".jsonl.tmp")
+                temporary.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+                temporary.replace(METRICS_EVENTS_PATH)
+    except OSError:
+        return
+
+
+def _maybe_cleanup_metrics() -> None:
+    global _last_metrics_cleanup_at
+    now = time.monotonic()
+    with _metrics_lock:
+        if now - _last_metrics_cleanup_at < CLEANUP_INTERVAL_SECONDS:
+            return
+        _last_metrics_cleanup_at = now
+    _cleanup_expired_metrics()
 
 
 @dataclass(frozen=True)
@@ -664,7 +873,7 @@ engine = Sam2Engine()
 grounder = QwenGrounder()
 limiter = SlidingWindowLimiter()
 
-for directory in (UPLOAD_DIR, IMAGE_PREVIEW_DIR, IMAGE_META_DIR, GROUNDING_DIR, AGENT_RUN_DIR, JOBS_DIR, RESULTS_DIR):
+for directory in (UPLOAD_DIR, IMAGE_PREVIEW_DIR, IMAGE_META_DIR, GROUNDING_DIR, AGENT_RUN_DIR, JOBS_DIR, RESULTS_DIR, METRICS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
@@ -1098,6 +1307,14 @@ def _run_segment_job(job: JobRecord, update: Callable[..., None]) -> dict[str, A
     return _write_result(record, job, image_rgb, mask, score, selected_index)
 
 
+def _job_queue_wait_ms(job: JobRecord) -> float | None:
+    created = _metric_timestamp(job.created_at)
+    started = _metric_timestamp(job.started_at)
+    if created is None or started is None:
+        return None
+    return max(0.0, (started - created).total_seconds() * 1000)
+
+
 class JobManager:
     """One local inference worker, durable JSON job records and polling state."""
 
@@ -1167,19 +1384,39 @@ class JobManager:
     def _work(self) -> None:
         while True:
             job_id = self._queue.get()
+            job_started_at = 0.0
             try:
                 job = self.get(job_id)
                 if job is None:
                     continue
                 self._update(job_id, status="running", phase="loading_model", message="正在准备本地 SAM2…", started_at=_utc_now(), error=None)
+                job_started_at = time.perf_counter()
                 fresh_job = self.get(job_id)
                 if fresh_job is None:
                     continue
                 result = _run_segment_job(fresh_job, lambda **changes: self._update(job_id, **changes))
                 self._update(job_id, status="succeeded", phase="succeeded", message="轮廓已生成，可以下载结果。", result=result, completed_at=_utc_now())
+                finished_job = self.get(job_id)
+                if finished_job is not None:
+                    _record_metric(
+                        "segment_job",
+                        owner_id=finished_job.owner_id,
+                        status="succeeded",
+                        duration_ms=(time.perf_counter() - job_started_at) * 1000,
+                        queue_wait_ms=_job_queue_wait_ms(finished_job),
+                    )
             except Sam2ConfigurationError as error:
                 message = str(error)
                 self._update(job_id, status="failed", phase="failed", message=message, error=message, completed_at=_utc_now())
+                failed_job = self.get(job_id)
+                if failed_job is not None:
+                    _record_metric(
+                        "segment_job",
+                        owner_id=failed_job.owner_id,
+                        status="failed",
+                        duration_ms=(time.perf_counter() - job_started_at) * 1000 if job_started_at else None,
+                        queue_wait_ms=_job_queue_wait_ms(failed_job),
+                    )
             except RuntimeError as error:
                 if "out of memory" in str(error).lower():
                     message = "内存不足。请换一张更小的图片，或降低 SAM2_MAX_IMAGE_EDGE。"
@@ -1187,10 +1424,28 @@ class JobManager:
                     app.logger.exception("SAM2 runtime error in job %s", job_id)
                     message = "SAM2 未能完成本次推理，请检查本机运行日志后重试。"
                 self._update(job_id, status="failed", phase="failed", message=message, error=message, completed_at=_utc_now())
+                failed_job = self.get(job_id)
+                if failed_job is not None:
+                    _record_metric(
+                        "segment_job",
+                        owner_id=failed_job.owner_id,
+                        status="failed",
+                        duration_ms=(time.perf_counter() - job_started_at) * 1000 if job_started_at else None,
+                        queue_wait_ms=_job_queue_wait_ms(failed_job),
+                    )
             except Exception:
                 app.logger.exception("Unexpected segmentation job failure: %s", job_id)
                 message = "生成轮廓时出现未预期的问题，请重新提交一次。"
                 self._update(job_id, status="failed", phase="failed", message=message, error=message, completed_at=_utc_now())
+                failed_job = self.get(job_id)
+                if failed_job is not None:
+                    _record_metric(
+                        "segment_job",
+                        owner_id=failed_job.owner_id,
+                        status="failed",
+                        duration_ms=(time.perf_counter() - job_started_at) * 1000 if job_started_at else None,
+                        queue_wait_ms=_job_queue_wait_ms(failed_job),
+                    )
             finally:
                 self._queue.task_done()
 
@@ -1269,13 +1524,43 @@ def _upload_too_large(_error: RequestEntityTooLarge) -> Any:
     return _json_error(f"图片超过 {MAX_UPLOAD_BYTES // 1024 // 1024} MB 上限。", 413)
 
 
+@app.get("/ops")
+def operations_dashboard() -> str:
+    """Render the token-gated operational dashboard shell.
+
+    The page itself contains no metrics and never embeds the access token. The
+    browser sends it only through an API header after the owner enters it.
+    """
+    return render_template("ops.html")
+
+
+@app.get("/api/ops/metrics")
+def operations_metrics() -> Any:
+    if not OPS_DASHBOARD_TOKEN:
+        return _json_error("运营面板尚未配置管理访问码。", 503)
+    supplied_token = request.headers.get("X-Ops-Token", "")
+    if not supplied_token or not hmac.compare_digest(supplied_token, OPS_DASHBOARD_TOKEN):
+        return _json_error("管理访问码无效。", 401)
+    raw_window = request.args.get("window_hours", "24")
+    try:
+        window_hours = int(raw_window)
+    except (TypeError, ValueError):
+        return _json_error("window_hours 必须是整数。", 400)
+    allowed_windows = {24, 7 * 24, 30 * 24}
+    if window_hours not in allowed_windows:
+        return _json_error("window_hours 仅支持 24、168 或 720。", 400)
+    return jsonify(_metrics_report(window_hours))
+
+
 @app.get("/")
 def home() -> str:
+    _record_metric("page_view", owner_id=_current_owner(), status="home")
     return render_template("home.html")
 
 
 @app.get("/workspace")
 def workspace() -> str:
+    _record_metric("page_view", owner_id=_current_owner(), status="workspace")
     return render_template("index.html")
 
 
@@ -1370,6 +1655,7 @@ def upload() -> Any:
     _json_write(_image_meta_path(image_id), record.as_storage())
     with records_lock:
         records[image_id] = record
+    _record_metric("upload", owner_id=owner_id)
     return jsonify({
         "image_id": image_id,
         "image_url": f"/media/images/{image_id}",
@@ -1411,7 +1697,23 @@ def uploaded_preview(image_id: str) -> Any:
 
 
 def _create_grounding_record(record: ImageRecord, description: str, owner_id: str) -> GroundingRecord:
-    proposal = grounder.ground(_load_rgb(record), description)
+    started = time.perf_counter()
+    try:
+        proposal = grounder.ground(_load_rgb(record), description)
+    except Exception:
+        _record_metric(
+            "grounding",
+            owner_id=owner_id,
+            status="failed",
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+        raise
+    _record_metric(
+        "grounding",
+        owner_id=owner_id,
+        status=proposal.status,
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
     grounding_record = GroundingRecord(
         grounding_id=uuid.uuid4().hex,
         image_id=record.image_id,
@@ -1603,6 +1905,7 @@ def create_agent_run() -> Any:
             app.logger.exception("Unexpected agent grounding failure")
             run.message = "自动定位暂时不可用。请在目标主体内加一个包含点，或用框选指出它。"
     _save_agent_run(run)
+    _record_metric("agent_run", owner_id=owner_id, status=run.phase)
     return jsonify(_agent_public(run, record)), 201
 
 
