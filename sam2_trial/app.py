@@ -73,6 +73,7 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 IMAGE_PREVIEW_DIR = DATA_DIR / "previews"
 IMAGE_META_DIR = DATA_DIR / "images"
 GROUNDING_DIR = DATA_DIR / "groundings"
+AGENT_RUN_DIR = DATA_DIR / "agent-runs"
 JOBS_DIR = DATA_DIR / "jobs"
 RESULTS_DIR = DATA_DIR / "results"
 
@@ -106,6 +107,10 @@ PREVIEW_JPEG_QUALITY = min(_environment_int("PREVIEW_JPEG_QUALITY", 84, 40), 92)
 CLEANUP_INTERVAL_SECONDS = _environment_int("CLEANUP_INTERVAL_SECONDS", 15 * 60, 60)
 MAX_PROMPT_POINTS = 24
 MAX_DESCRIPTION_CHARS = 500
+AGENT_AUTO_SEGMENT_CONFIDENCE = 0.75
+AGENT_REVIEW_IOU = 0.70
+AGENT_MIN_MASK_AREA_RATIO = 0.001
+AGENT_MAX_MASK_AREA_RATIO = 0.92
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 IMAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESULT_FILE_NAMES = {"mask.png", "overlay.png", "preview.jpg", "contours.png", "result.json"}
@@ -305,6 +310,95 @@ class GroundingRecord:
         except (KeyError, TypeError, ValueError):
             return None
         if not IMAGE_ID_RE.fullmatch(record.grounding_id) or not IMAGE_ID_RE.fullmatch(record.image_id):
+            return None
+        return record
+
+
+AGENT_PHASES = {
+    "needs_choice",
+    "needs_confirmation",
+    "needs_manual_prompt",
+    "ready_to_segment",
+    "segmenting",
+    "awaiting_evaluation",
+    "needs_refinement",
+    "completed",
+    "failed",
+}
+
+
+@dataclass
+class AgentRun:
+    """A small, durable controller state for one image-segmentation task.
+
+    It never stores upstream model text or image pixels.  The state only links
+    the owned image, the validated Qwen grounding record and any SAM2 job.
+    """
+
+    agent_id: str
+    image_id: str
+    owner_id: str
+    description: str
+    created_at: str
+    expires_at: str | None
+    phase: str
+    message: str
+    grounding_id: str | None = None
+    selected_candidate_index: int | None = None
+    job_id: str | None = None
+    attempts: int = 0
+    evaluation: dict[str, Any] | None = None
+
+    def as_storage(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "image_id": self.image_id,
+            "owner_id": self.owner_id,
+            "description": self.description,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "phase": self.phase,
+            "message": self.message,
+            "grounding_id": self.grounding_id,
+            "selected_candidate_index": self.selected_candidate_index,
+            "job_id": self.job_id,
+            "attempts": self.attempts,
+            "evaluation": self.evaluation,
+        }
+
+    @classmethod
+    def from_storage(cls, value: dict[str, Any]) -> "AgentRun | None":
+        try:
+            selected = value.get("selected_candidate_index")
+            record = cls(
+                agent_id=str(value["agent_id"]),
+                image_id=str(value["image_id"]),
+                owner_id=str(value["owner_id"]),
+                description=str(value["description"]),
+                created_at=str(value["created_at"]),
+                expires_at=value.get("expires_at") if isinstance(value.get("expires_at"), str) else None,
+                phase=str(value["phase"]),
+                message=str(value["message"]),
+                grounding_id=value.get("grounding_id") if isinstance(value.get("grounding_id"), str) else None,
+                selected_candidate_index=selected if isinstance(selected, int) and not isinstance(selected, bool) else None,
+                job_id=value.get("job_id") if isinstance(value.get("job_id"), str) else None,
+                attempts=int(value.get("attempts", 0)),
+                evaluation=value.get("evaluation") if isinstance(value.get("evaluation"), dict) else None,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        if (
+            not IMAGE_ID_RE.fullmatch(record.agent_id)
+            or not IMAGE_ID_RE.fullmatch(record.image_id)
+            or not IMAGE_ID_RE.fullmatch(record.owner_id)
+            or not record.description
+            or len(record.description) > MAX_DESCRIPTION_CHARS
+            or record.phase not in AGENT_PHASES
+            or (record.grounding_id is not None and not IMAGE_ID_RE.fullmatch(record.grounding_id))
+            or (record.job_id is not None and not IMAGE_ID_RE.fullmatch(record.job_id))
+            or record.attempts < 0
+            or (record.selected_candidate_index is not None and record.selected_candidate_index < 0)
+        ):
             return None
         return record
 
@@ -564,11 +658,13 @@ records: dict[str, ImageRecord] = {}
 records_lock = threading.Lock()
 grounding_records: dict[str, GroundingRecord] = {}
 grounding_records_lock = threading.Lock()
+agent_runs: dict[str, AgentRun] = {}
+agent_runs_lock = threading.Lock()
 engine = Sam2Engine()
 grounder = QwenGrounder()
 limiter = SlidingWindowLimiter()
 
-for directory in (UPLOAD_DIR, IMAGE_PREVIEW_DIR, IMAGE_META_DIR, GROUNDING_DIR, JOBS_DIR, RESULTS_DIR):
+for directory in (UPLOAD_DIR, IMAGE_PREVIEW_DIR, IMAGE_META_DIR, GROUNDING_DIR, AGENT_RUN_DIR, JOBS_DIR, RESULTS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
@@ -610,6 +706,10 @@ def _image_meta_path(image_id: str) -> Path:
 
 def _grounding_path(grounding_id: str) -> Path:
     return GROUNDING_DIR / f"{grounding_id}.json"
+
+
+def _agent_run_path(agent_id: str) -> Path:
+    return AGENT_RUN_DIR / f"{agent_id}.json"
 
 
 def _job_path(job_id: str) -> Path:
@@ -654,6 +754,86 @@ def _load_grounding(grounding_id: str) -> GroundingRecord | None:
         with grounding_records_lock:
             grounding_records[grounding_id] = record
     return record
+
+
+def _load_agent_run(agent_id: str) -> AgentRun | None:
+    with agent_runs_lock:
+        cached = agent_runs.get(agent_id)
+    if cached is not None:
+        return cached
+    storage = _json_read(_agent_run_path(agent_id))
+    run = AgentRun.from_storage(storage) if storage else None
+    if run is not None:
+        with agent_runs_lock:
+            agent_runs[agent_id] = run
+    return run
+
+
+def _require_agent_run(agent_id: str) -> AgentRun:
+    if not IMAGE_ID_RE.fullmatch(agent_id):
+        abort(404)
+    run = _load_agent_run(agent_id)
+    if run is None or run.owner_id != _current_owner() or _safe_iso_before_now(run.expires_at):
+        abort(404)
+    return run
+
+
+def _save_agent_run(run: AgentRun) -> None:
+    _json_write(_agent_run_path(run.agent_id), run.as_storage())
+    with agent_runs_lock:
+        agent_runs[run.agent_id] = run
+
+
+def _agent_next_action(phase: str) -> str:
+    return {
+        "needs_choice": "choose_candidate",
+        "needs_confirmation": "confirm_candidate",
+        "needs_manual_prompt": "add_manual_prompt",
+        "ready_to_segment": "segment",
+        "segmenting": "wait_for_segment",
+        "awaiting_evaluation": "evaluate_result",
+        "needs_refinement": "refine_prompt",
+        "completed": "download_result",
+        "failed": "retry_or_refine",
+    }.get(phase, "wait")
+
+
+def _agent_public(run: AgentRun, record: ImageRecord) -> dict[str, Any]:
+    grounding = _load_grounding(run.grounding_id) if run.grounding_id else None
+    candidates: list[dict[str, Any]] = []
+    grounding_status = None
+    grounding_note = None
+    grounding_model = None
+    if grounding is not None and grounding.owner_id == run.owner_id and grounding.image_id == run.image_id:
+        public = grounding.as_metadata(record.width, record.height)
+        candidates = public["candidates"]
+        grounding_status = public["status"]
+        grounding_note = public["note"]
+        grounding_model = public["model"]
+    return {
+        "agent_id": run.agent_id,
+        "image_id": run.image_id,
+        "description": run.description,
+        "phase": run.phase,
+        "next_action": _agent_next_action(run.phase),
+        "message": run.message,
+        "created_at": run.created_at,
+        "grounding_id": run.grounding_id,
+        "grounding_status": grounding_status,
+        "grounding_note": grounding_note,
+        "grounding_model": grounding_model,
+        "candidates": candidates,
+        "selected_candidate_index": run.selected_candidate_index,
+        "job_id": run.job_id,
+        "attempts": run.attempts,
+        "evaluation": run.evaluation,
+    }
+
+
+def _agent_candidate_box(record: ImageRecord, grounding: GroundingRecord, candidate_index: int) -> list[float]:
+    if not 0 <= candidate_index < len(grounding.proposal.candidates):
+        raise ValueError("Agent 选择的候选框已失效，请重新分析图片。")
+    return grounding.proposal.candidates[candidate_index].absolute_box(record.width, record.height)
 
 
 def _require_grounding(grounding_id: Any, image_id: str, description: str | None) -> GroundingRecord | None:
@@ -817,6 +997,20 @@ def _serialize_prompt(record: ImageRecord, payload: dict[str, Any]) -> dict[str,
     }
 
 
+def _enqueue_segment_job(record: ImageRecord, owner_id: str, stored_prompt: dict[str, Any]) -> JobRecord:
+    job = JobRecord(
+        job_id=uuid.uuid4().hex,
+        image_id=record.image_id,
+        owner_id=owner_id,
+        input_payload=stored_prompt,
+        created_at=_utc_now(),
+        expires_at=record.expires_at,
+        message="任务已排队，SAM2 将在后台运行。",
+    )
+    job_manager.submit(job)
+    return job
+
+
 def _write_result(record: ImageRecord, job: JobRecord, image_rgb: np.ndarray, mask: np.ndarray, score: float, selected_index: int) -> dict[str, Any]:
     result_id = uuid.uuid4().hex
     final_dir = RESULTS_DIR / result_id
@@ -876,6 +1070,7 @@ def _write_result(record: ImageRecord, job: JobRecord, image_rgb: np.ndarray, ma
         "result_id": result_id,
         "estimated_iou": score,
         "mask_area_px": int(mask.sum()),
+        "mask_bbox_xyxy": _mask_bbox(mask),
         "mask_url": f"/media/results/{result_id}/mask.png",
         "preview_url": f"/media/results/{result_id}/preview.jpg",
         # Kept for old clients that still look for overlay_url.
@@ -1028,6 +1223,13 @@ def _cleanup_expired_data() -> None:
             metadata_path.unlink(missing_ok=True)
             with grounding_records_lock:
                 grounding_records.pop(record.grounding_id, None)
+    for metadata_path in AGENT_RUN_DIR.glob("*.json"):
+        run = AgentRun.from_storage(_json_read(metadata_path) or {})
+        if run is None or (run.image_id not in expired_images and not _safe_iso_before_now(run.expires_at)):
+            continue
+        metadata_path.unlink(missing_ok=True)
+        with agent_runs_lock:
+            agent_runs.pop(run.agent_id, None)
     for metadata_path in JOBS_DIR.glob("*.json"):
         job = JobRecord.from_storage(_json_read(metadata_path) or {})
         if job is None or (job.image_id not in expired_images and not _safe_iso_before_now(job.expires_at)):
@@ -1208,6 +1410,119 @@ def uploaded_preview(image_id: str) -> Any:
     return _send_owned_media(UPLOAD_DIR, record.filename)
 
 
+def _create_grounding_record(record: ImageRecord, description: str, owner_id: str) -> GroundingRecord:
+    proposal = grounder.ground(_load_rgb(record), description)
+    grounding_record = GroundingRecord(
+        grounding_id=uuid.uuid4().hex,
+        image_id=record.image_id,
+        description=description,
+        model=grounder.model,
+        proposal=proposal,
+        created_at=_utc_now(),
+        owner_id=owner_id,
+    )
+    _json_write(_grounding_path(grounding_record.grounding_id), grounding_record.as_storage())
+    with grounding_records_lock:
+        grounding_records[grounding_record.grounding_id] = grounding_record
+    return grounding_record
+
+
+def _agent_phase_for_proposal(proposal: GroundingProposal) -> tuple[str, str, int | None]:
+    candidate_count = len(proposal.candidates)
+    if candidate_count == 0:
+        return (
+            "needs_manual_prompt",
+            "我还不能可靠定位这个目标。请在目标主体内加一个包含点，或用框选指出它。",
+            None,
+        )
+    if proposal.status == "ambiguous" or candidate_count > 1:
+        return (
+            "needs_choice",
+            f"我找到了 {candidate_count} 个可能的区域。请选择最符合目标的一项，再让我交给 SAM2。",
+            None,
+        )
+    label = proposal.candidates[0].label
+    label_suffix = f"「{label}」" if label else "这个区域"
+    if proposal.candidates[0].confidence >= AGENT_AUTO_SEGMENT_CONFIDENCE:
+        return (
+            "ready_to_segment",
+            f"我较有把握地找到了{label_suffix}。确认后我会把这个候选框交给 SAM2。",
+            0,
+        )
+    return (
+        "needs_confirmation",
+        f"我找到了{label_suffix}。请确认候选框，或补充点选/框选后再交给 SAM2。",
+        0,
+    )
+
+
+def _agent_job_public(run: AgentRun) -> dict[str, Any] | None:
+    if not run.job_id:
+        return None
+    job = job_manager.get(run.job_id)
+    if job is None or job.owner_id != run.owner_id:
+        return None
+    public = job.as_public(job_manager.queue_depth)
+    public["poll_url"] = f"/api/jobs/{job.job_id}"
+    return public
+
+
+def _evaluate_agent_run(run: AgentRun, record: ImageRecord, job: JobRecord) -> None:
+    if job.status == "failed":
+        run.phase = "needs_refinement"
+        run.message = "SAM2 这次没有完成。请补充一个包含点、排除点或更紧的框后重试。"
+        run.evaluation = {
+            "verdict": "needs_refinement",
+            "checks": [{"code": "job_failed", "severity": "warning", "message": job.error or job.message}],
+            "recommended_action": "refine_prompt",
+        }
+        _save_agent_run(run)
+        return
+    if job.status != "succeeded" or not isinstance(job.result, dict):
+        raise ValueError("SAM2 任务仍在运行，请完成后再让 Agent 复核。")
+
+    result = job.result
+    area = result.get("mask_area_px")
+    score = result.get("estimated_iou")
+    area_ratio = float(area) / float(record.width * record.height) if isinstance(area, (int, float)) else None
+    checks: list[dict[str, str]] = []
+    needs_refinement = False
+    if area_ratio is None or area_ratio <= 0:
+        checks.append({"code": "empty_mask", "severity": "warning", "message": "结果没有可用的 mask 像素。"})
+        needs_refinement = True
+    elif area_ratio > AGENT_MAX_MASK_AREA_RATIO:
+        checks.append({"code": "mask_too_large", "severity": "warning", "message": "轮廓覆盖了图片的大部分区域，建议加排除点或收紧框选。"})
+        needs_refinement = True
+    elif area_ratio < AGENT_MIN_MASK_AREA_RATIO:
+        checks.append({"code": "mask_very_small", "severity": "info", "message": "轮廓很小；若目标本来较小可直接使用，否则请补一个包含点。"})
+
+    if isinstance(score, (int, float)) and score < AGENT_REVIEW_IOU:
+        checks.append({"code": "low_sam2_score", "severity": "info", "message": "SAM2 的候选排序信号偏弱，建议人工检查边界。"})
+        needs_refinement = True
+
+    bbox = result.get("mask_bbox_xyxy")
+    if isinstance(bbox, list) and len(bbox) == 4 and all(isinstance(value, int) for value in bbox):
+        if bbox[0] == 0 and bbox[1] == 0 and bbox[2] >= record.width - 1 and bbox[3] >= record.height - 1:
+            checks.append({"code": "mask_touches_all_borders", "severity": "info", "message": "轮廓触及图片四边，建议确认它没有把背景一起选中。"})
+
+    if not checks:
+        checks.append({"code": "review_complete", "severity": "info", "message": "基础质量检查通过；仍建议按视觉效果确认边界。"})
+    run.evaluation = {
+        "verdict": "needs_refinement" if needs_refinement else "pass",
+        "area_ratio": area_ratio,
+        "estimated_iou": float(score) if isinstance(score, (int, float)) else None,
+        "checks": checks,
+        "recommended_action": "refine_prompt" if needs_refinement else "download_result",
+    }
+    if needs_refinement:
+        run.phase = "needs_refinement"
+        run.message = "我已生成结果，但质量信号提示可以再细化。你可以加点、排除点或重新框选后再试。"
+    else:
+        run.phase = "completed"
+        run.message = "我已完成分割和基础质量复核。请按视觉效果确认边界后下载结果。"
+    _save_agent_run(run)
+
+
 @app.get("/api/grounding/status")
 def grounding_status() -> Any:
     return jsonify({"configured": grounder.configured, "provider": "Alibaba Cloud Model Studio", "model": grounder.model if grounder.configured else None})
@@ -1232,28 +1547,173 @@ def ground() -> Any:
     if not grounder.configured:
         return _json_error("未配置 DASHSCOPE_API_KEY。手动点选和框选仍可使用。", 503)
     try:
-        proposal = grounder.ground(_load_rgb(record), description)
+        grounding_record = _create_grounding_record(record, description, owner_id)
     except GroundingError as error:
         app.logger.warning("Qwen grounding failed: %s", error)
         return _json_error(str(error), 502)
     except Exception:
         app.logger.exception("Unexpected Qwen grounding error")
         return _json_error("百炼自动定位失败。完整错误已写入本地终端。", 502)
-
-    grounding_record = GroundingRecord(
-        grounding_id=uuid.uuid4().hex,
-        image_id=record.image_id,
-        description=description,
-        model=grounder.model,
-        proposal=proposal,
-        created_at=_utc_now(),
-        owner_id=owner_id,
-    )
-    _json_write(_grounding_path(grounding_record.grounding_id), grounding_record.as_storage())
-    with grounding_records_lock:
-        grounding_records[grounding_record.grounding_id] = grounding_record
     public = grounding_record.as_metadata(record.width, record.height)
     return jsonify({"grounding_id": grounding_record.grounding_id, "status": public["status"], "note": public["note"], "model": public["model"], "candidate": public["candidate"], "candidates": public["candidates"]}), 200
+
+
+@app.post("/api/agent-runs")
+def create_agent_run() -> Any:
+    """Start an agent-controlled segmentation flow for one owned image."""
+    owner_id = _current_owner()
+    limited = _limit_or_error(owner_id, "agent_ground", 24, 24 * 60 * 60)
+    if limited is not None:
+        return limited
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error("请提交 JSON 请求。", 400)
+    try:
+        record = _require_record(payload.get("image_id"))
+        description = _parse_description(payload.get("description"))
+        if description is None:
+            raise ValueError("请先写下你想分割的目标。")
+    except ValueError as error:
+        return _json_error(str(error), 400)
+
+    run = AgentRun(
+        agent_id=uuid.uuid4().hex,
+        image_id=record.image_id,
+        owner_id=owner_id,
+        description=description,
+        created_at=_utc_now(),
+        expires_at=record.expires_at,
+        phase="needs_manual_prompt",
+        message="请在目标主体内加一个包含点，或用框选指出它。",
+    )
+    if not grounder.configured:
+        run.message = "自动定位尚未配置。我可以继续使用你添加的包含点或框选来完成分割。"
+    else:
+        try:
+            grounding_record = _create_grounding_record(record, description, owner_id)
+            phase, message, selected_index = _agent_phase_for_proposal(grounding_record.proposal)
+            run.phase = phase
+            run.message = message
+            run.grounding_id = grounding_record.grounding_id
+            run.selected_candidate_index = selected_index
+        except GroundingError as error:
+            app.logger.warning("Agent grounding failed: %s", error)
+            run.message = "自动定位暂时不可用。请在目标主体内加一个包含点，或用框选指出它。"
+        except Exception:
+            app.logger.exception("Unexpected agent grounding failure")
+            run.message = "自动定位暂时不可用。请在目标主体内加一个包含点，或用框选指出它。"
+    _save_agent_run(run)
+    return jsonify(_agent_public(run, record)), 201
+
+
+@app.get("/api/agent-runs/<agent_id>")
+def agent_run_status(agent_id: str) -> Any:
+    run = _require_agent_run(agent_id)
+    record = _require_record(run.image_id)
+    job = job_manager.get(run.job_id) if run.job_id else None
+    if run.phase == "segmenting" and job is not None and job.status in {"succeeded", "failed"}:
+        run.phase = "awaiting_evaluation"
+        run.message = "SAM2 已完成。请让 Agent 复核结果，或直接按视觉效果检查边界。"
+        _save_agent_run(run)
+    public = _agent_public(run, record)
+    public["job"] = _agent_job_public(run)
+    return jsonify(public)
+
+
+@app.post("/api/agent-runs/<agent_id>/choose")
+def choose_agent_candidate(agent_id: str) -> Any:
+    run = _require_agent_run(agent_id)
+    record = _require_record(run.image_id)
+    if run.phase not in {"needs_choice", "needs_confirmation", "needs_refinement"}:
+        return _json_error("当前 Agent 状态不需要选择候选框。", 409)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error("请提交 JSON 请求。", 400)
+    candidate_index = payload.get("candidate_index")
+    if isinstance(candidate_index, bool) or not isinstance(candidate_index, int):
+        return _json_error("候选框序号必须是整数。", 400)
+    grounding = _load_grounding(run.grounding_id) if run.grounding_id else None
+    if grounding is None or grounding.owner_id != run.owner_id or grounding.image_id != run.image_id:
+        return _json_error("Agent 的候选框已失效，请重新分析图片。", 409)
+    if not 0 <= candidate_index < len(grounding.proposal.candidates):
+        return _json_error("候选框序号超出范围。", 400)
+    run.selected_candidate_index = candidate_index
+    run.phase = "ready_to_segment"
+    run.message = f"已确认候选 {candidate_index + 1}。我会把这个框和你的额外点选一起交给 SAM2。"
+    _save_agent_run(run)
+    return jsonify(_agent_public(run, record))
+
+
+@app.post("/api/agent-runs/<agent_id>/segment")
+def segment_agent_run(agent_id: str) -> Any:
+    owner_id = _current_owner()
+    limited = _limit_or_error(owner_id, "segment", 36, 60 * 60)
+    if limited is not None:
+        return limited
+    run = _require_agent_run(agent_id)
+    record = _require_record(run.image_id)
+    if run.phase not in {"needs_confirmation", "needs_manual_prompt", "ready_to_segment", "needs_refinement"}:
+        return _json_error("当前 Agent 不能提交分割任务。", 409)
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return _json_error("请提交 JSON 请求。", 400)
+
+    grounding = _load_grounding(run.grounding_id) if run.grounding_id else None
+    candidate_index = run.selected_candidate_index
+    try:
+        agent_box: list[float] | None = None
+        grounding_id: str | None = None
+        if grounding is not None and candidate_index is not None:
+            if grounding.owner_id != owner_id or grounding.image_id != record.image_id or grounding.description != run.description:
+                raise ValueError("Agent 的候选框已失效，请重新分析图片。")
+            agent_box = _agent_candidate_box(record, grounding, candidate_index)
+            grounding_id = grounding.grounding_id
+        job_payload = {
+            "image_id": record.image_id,
+            "description": run.description,
+            "points": payload.get("points"),
+            # A Qwen-originated box is always reconstructed on the server.
+            "box": agent_box if agent_box is not None else payload.get("box"),
+            "grounding_id": grounding_id,
+            "grounding_candidate_index": candidate_index if grounding_id else None,
+        }
+        stored_prompt = _serialize_prompt(record, job_payload)
+    except ValueError as error:
+        return _json_error(str(error), 400)
+
+    try:
+        job = _enqueue_segment_job(record, owner_id, stored_prompt)
+    except queue.Full:
+        return _json_error("本机任务队列已满，请等待一个任务完成后再试。", 503, 5)
+    run.job_id = job.job_id
+    run.phase = "segmenting"
+    run.message = "我已把提示交给 SAM2，正在等待像素级轮廓。"
+    run.attempts += 1
+    run.evaluation = None
+    _save_agent_run(run)
+    public = _agent_public(run, record)
+    public["job"] = _agent_job_public(run)
+    return jsonify(public), 202
+
+
+@app.post("/api/agent-runs/<agent_id>/evaluate")
+def evaluate_agent_run(agent_id: str) -> Any:
+    run = _require_agent_run(agent_id)
+    record = _require_record(run.image_id)
+    if not run.job_id:
+        return _json_error("Agent 还没有可以复核的分割任务。", 409)
+    job = job_manager.get(run.job_id)
+    if job is None or job.owner_id != run.owner_id:
+        abort(404)
+    try:
+        _evaluate_agent_run(run, record, job)
+    except ValueError as error:
+        return _json_error(str(error), 409)
+    public = _agent_public(run, record)
+    public["job"] = _agent_job_public(run)
+    return jsonify(public)
 
 
 def _create_segment_job() -> Any:
@@ -1269,17 +1729,8 @@ def _create_segment_job() -> Any:
         stored_prompt = _serialize_prompt(record, payload)
     except ValueError as error:
         return _json_error(str(error), 400)
-    job = JobRecord(
-        job_id=uuid.uuid4().hex,
-        image_id=record.image_id,
-        owner_id=owner_id,
-        input_payload=stored_prompt,
-        created_at=_utc_now(),
-        expires_at=record.expires_at,
-        message="任务已排队，SAM2 将在后台运行。",
-    )
     try:
-        job_manager.submit(job)
+        job = _enqueue_segment_job(record, owner_id, stored_prompt)
     except queue.Full:
         return _json_error("本机任务队列已满，请等待一个任务完成后再试。", 503, 5)
     return jsonify({"job_id": job.job_id, "status": job.status, "poll_url": f"/api/jobs/{job.job_id}"}), 202

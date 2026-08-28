@@ -69,13 +69,26 @@
 
           <div class="primary-actions">
             <button id="run-button" class="button button--primary" type="button" disabled>
-              <span aria-hidden="true">✦</span> 自动定位并生成轮廓
+              <span aria-hidden="true">✦</span> 启动分割 Agent
             </button>
             <button id="ground-button" class="button button--secondary" type="button" disabled>
-              仅自动定位
+              只查看 Qwen 候选
             </button>
           </div>
           <p id="grounding-status" class="engine-note" aria-live="polite">正在检查视觉模型配置…</p>
+
+          <section id="agent-panel" class="agent-panel" hidden aria-live="polite" aria-label="Agent 决策状态">
+            <div class="agent-panel__top">
+              <span class="agent-mark" aria-hidden="true">✦</span>
+              <div>
+                <p>SEGMENTATION AGENT</p>
+                <h3 id="agent-title">等待分析</h3>
+              </div>
+              <span id="agent-stage" class="agent-stage">待命</span>
+            </div>
+            <p id="agent-message" class="agent-message"></p>
+            <div id="agent-actions" class="agent-actions"></div>
+          </section>
 
           <div class="divider"></div>
 

@@ -15,6 +15,11 @@
   const groundButton = document.getElementById("ground-button");
   const runButton = document.getElementById("run-button");
   const groundingStatus = document.getElementById("grounding-status");
+  const agentPanel = document.getElementById("agent-panel");
+  const agentTitle = document.getElementById("agent-title");
+  const agentStage = document.getElementById("agent-stage");
+  const agentMessage = document.getElementById("agent-message");
+  const agentActions = document.getElementById("agent-actions");
   const candidateChoices = document.getElementById("candidate-choices");
   const resetPromptsButton = document.getElementById("reset-prompts");
   const resultSection = document.getElementById("result-section");
@@ -33,7 +38,7 @@
   const jobProgressBar = document.getElementById("job-progress-bar");
   const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
 
-  if (!fileInput || !description || !canvas || !context) {
+  if (!fileInput || !description || !canvas || !context || !agentPanel || !agentTitle || !agentStage || !agentMessage || !agentActions) {
     return;
   }
 
@@ -53,6 +58,10 @@
     groundingId: null,
     groundingCandidates: [],
     selectedCandidateIndex: null,
+    agentRunId: null,
+    agentPhase: null,
+    agentMessage: "",
+    agentEvaluation: null,
     groundingAvailable: false,
     mode: "positive",
     busy: false,
@@ -134,7 +143,7 @@
 
     segmentButton.disabled = state.busy || !state.imageId || !hasManualPrompt;
     groundButton.disabled = state.busy || !state.imageId || !state.groundingAvailable || !hasDescription;
-    runButton.disabled = state.busy || !state.imageId || !state.groundingAvailable || !hasDescription;
+    runButton.disabled = state.busy || !state.imageId || !hasDescription;
   }
 
   function setBusy(isBusy, action) {
@@ -146,14 +155,15 @@
       button.disabled = isBusy;
     });
 
-    runButton.innerHTML = isBusy && action === "run"
-      ? "<span aria-hidden=\"true\">⋯</span> Qwen 正在定位"
-      : "<span aria-hidden=\"true\">✦</span> 自动定位并生成轮廓";
-    groundButton.textContent = isBusy && action === "ground" ? "Qwen 正在定位…" : "仅自动定位";
+    runButton.innerHTML = isBusy && action === "agent"
+      ? "<span aria-hidden=\"true\">⋯</span> Agent 正在分析"
+      : "<span aria-hidden=\"true\">✦</span> 启动分割 Agent";
+    groundButton.textContent = isBusy && action === "ground" ? "Qwen 正在定位…" : "只查看 Qwen 候选";
     segmentButton.textContent = isBusy && action === "segment" ? "任务进行中…" : "生成轮廓";
 
     refreshActions();
     renderCandidateChoices();
+    renderAgentPanel();
   }
 
   function pointFromEvent(event) {
@@ -211,12 +221,46 @@
     context.restore();
   }
 
+  function drawAgentCandidateBoxes() {
+    if (state.agentPhase !== "needs_choice") {
+      return;
+    }
+    const colors = ["#2b8a67", "#536fc8", "#b06527"];
+    const rect = canvas.getBoundingClientRect();
+    const displayScale = canvas.width / Math.max(rect.width, 1);
+    state.groundingCandidates.forEach((candidate, index) => {
+      const box = candidateToBox(candidate);
+      if (!box) {
+        return;
+      }
+      const start = toCanvasPoint({ x: box.x0, y: box.y0 });
+      const end = toCanvasPoint({ x: box.x1, y: box.y1 });
+      const color = colors[index % colors.length];
+      context.save();
+      context.setLineDash([6 * displayScale, 4 * displayScale]);
+      context.lineWidth = Math.max(2 * displayScale, 2);
+      context.strokeStyle = color;
+      context.strokeRect(start.x, start.y, end.x - start.x, end.y - start.y);
+      context.setLineDash([]);
+      const badge = Math.max(17 * displayScale, 15);
+      context.fillStyle = color;
+      context.fillRect(start.x, start.y, badge, badge);
+      context.fillStyle = "#ffffff";
+      context.font = Math.max(11 * displayScale, 10) + "px sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(String(index + 1), start.x + badge / 2, start.y + badge / 2 + displayScale * 0.5);
+      context.restore();
+    });
+  }
+
   function redraw() {
     if (!state.image) {
       return;
     }
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(state.image, 0, 0, canvas.width, canvas.height);
+    drawAgentCandidateBoxes();
     drawBox(state.box, false);
     drawBox(state.draftBox, true);
     state.points.forEach(drawPoint);
@@ -240,6 +284,104 @@
       x1: Math.max(start.x, end.x),
       y1: Math.max(start.y, end.y),
     };
+  }
+
+  function clearAgentState() {
+    state.agentRunId = null;
+    state.agentPhase = null;
+    state.agentMessage = "";
+    state.agentEvaluation = null;
+    agentActions.replaceChildren();
+    agentPanel.hidden = true;
+  }
+
+  function agentPhaseMeta(phase) {
+    return {
+      needs_choice: { title: "需要你确认对象", stage: "待选择" },
+      needs_confirmation: { title: "请确认候选框", stage: "待确认" },
+      needs_manual_prompt: { title: "需要一个手动提示", stage: "等你标注" },
+      ready_to_segment: { title: "准备交给 SAM2", stage: "可继续" },
+      segmenting: { title: "SAM2 正在描边", stage: "处理中" },
+      awaiting_evaluation: { title: "等待质量复核", stage: "待复核" },
+      needs_refinement: { title: "建议再细化一次", stage: "可细化" },
+      completed: { title: "已完成基础复核", stage: "完成" },
+      failed: { title: "需要新的提示", stage: "可重试" },
+    }[phase] || { title: "Agent 正在等待", stage: "待命" };
+  }
+
+  function addAgentAction(label, className, handler) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button " + className;
+    button.textContent = label;
+    button.disabled = state.busy;
+    button.addEventListener("click", handler);
+    agentActions.append(button);
+  }
+
+  function renderAgentPanel() {
+    if (!state.agentRunId || !state.agentPhase) {
+      agentPanel.hidden = true;
+      return;
+    }
+    const phase = state.agentPhase;
+    const meta = agentPhaseMeta(phase);
+    agentPanel.hidden = false;
+    agentPanel.className = "agent-panel agent-panel--" + phase.replaceAll("_", "-");
+    agentTitle.textContent = meta.title;
+    agentStage.textContent = meta.stage;
+    agentMessage.textContent = state.agentMessage || "Agent 正在整理下一步。";
+    agentActions.replaceChildren();
+
+    if (phase === "needs_choice") {
+      addAgentAction("改用手动提示", "button--secondary", () => {
+        clearAgentState();
+        clearGrounding();
+        setMode("positive");
+        setStatus("已切换到手动提示。请在目标主体内添加一个包含点，或框选目标。", "");
+      });
+    } else if (phase === "needs_confirmation" || phase === "ready_to_segment") {
+      addAgentAction("确认并交给 SAM2", "button--primary", startAgentSegmentation);
+      addAgentAction("改用手动提示", "button--secondary", () => {
+        clearAgentState();
+        clearGrounding();
+        setMode("positive");
+        setStatus("已切换到手动提示。请添加点或框选一个目标区域。", "");
+      });
+    } else if (phase === "needs_manual_prompt") {
+      addAgentAction("添加包含点", "button--primary", () => setMode("positive"));
+      addAgentAction("框选目标", "button--secondary", () => setMode("box"));
+    } else if (phase === "needs_refinement" || phase === "failed") {
+      addAgentAction("添加包含点", "button--secondary", () => setMode("positive"));
+      addAgentAction("框选细化", "button--secondary", () => setMode("box"));
+      if (state.box || state.points.some((point) => point.label === 1)) {
+        addAgentAction("使用新提示再试", "button--primary", startAgentSegmentation);
+      }
+    } else if (phase === "awaiting_evaluation") {
+      addAgentAction("复核当前结果", "button--secondary", evaluateAgentResult);
+    }
+  }
+
+  function applyAgentRun(run) {
+    if (!run || typeof run.agent_id !== "string" || typeof run.phase !== "string") {
+      throw new Error("Agent 没有返回有效的任务状态，请重新分析图片。" );
+    }
+    state.agentRunId = run.agent_id;
+    state.agentPhase = run.phase;
+    state.agentMessage = typeof run.message === "string" ? run.message : "Agent 正在等待下一步。";
+    state.agentEvaluation = run.evaluation && typeof run.evaluation === "object" ? run.evaluation : null;
+    state.groundingId = typeof run.grounding_id === "string" ? run.grounding_id : null;
+    state.groundingCandidates = Array.isArray(run.candidates) ? run.candidates.slice(0, 3) : [];
+    state.selectedCandidateIndex = Number.isInteger(run.selected_candidate_index) ? run.selected_candidate_index : null;
+    if (state.selectedCandidateIndex !== null && state.groundingCandidates.length) {
+      selectGroundingCandidate(state.selectedCandidateIndex);
+    } else if (state.boxSource === "qwen") {
+      clearQwenBox();
+      redraw();
+    }
+    renderCandidateChoices();
+    renderAgentPanel();
+    refreshActions();
   }
 
   function clearGrounding() {
@@ -299,7 +441,11 @@
 
     const heading = document.createElement("p");
     heading.className = "candidate-heading";
-    heading.textContent = state.groundingCandidates.length === 1
+    heading.textContent = state.agentPhase === "needs_choice"
+      ? "Agent 找到了多个可能区域。请点选你真正想要的对象。"
+      : state.agentPhase === "needs_confirmation"
+        ? "Agent 找到了一个可能区域。请确认后再交给 SAM2。"
+        : state.groundingCandidates.length === 1
       ? "Qwen 推荐了这个区域；可直接生成，也可再补充提示。"
       : "选择一个候选区域，再确认或细化边界。";
     candidateChoices.append(heading);
@@ -320,10 +466,14 @@
         ? candidate.label.trim()
         : "候选区域";
       button.textContent = "候选 " + String(index + 1) + " · " + label + (confidence === null ? "" : " · " + String(Math.round(confidence * 100)) + "%");
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         if (selectGroundingCandidate(index)) {
           setMode("box");
-          setStatus("已选择候选 " + String(index + 1) + "。可直接生成，或添加正负点细化。", "success");
+          if (state.agentRunId && state.agentPhase === "needs_choice") {
+            await chooseAgentCandidate(index);
+          } else {
+            setStatus("已选择候选 " + String(index + 1) + "。可直接生成，或添加正负点细化。", "success");
+          }
         }
       });
       buttons.append(button);
@@ -340,6 +490,9 @@
     state.boxDragStart = null;
     state.boxSource = null;
     clearGrounding();
+    if (!settings.keepAgent) {
+      clearAgentState();
+    }
     redraw();
     refreshActions();
     if (!settings.quiet && state.imageId) {
@@ -481,8 +634,7 @@
     }
   }
 
-  async function autoGround(options) {
-    const startAfterGrounding = Boolean(options && options.startAfterGrounding);
+  async function autoGround() {
     if (!state.imageId) {
       setStatus("请先选择一张图片。", "error");
       return;
@@ -492,13 +644,12 @@
       return;
     }
 
+    clearAgentState();
     clearGrounding();
     clearQwenBox();
     redraw();
-    setBusy(true, startAfterGrounding ? "run" : "ground");
-    setStatus(startAfterGrounding
-      ? "正在用 Qwen 找到目标区域…"
-      : "正在把图片和描述发送给已配置的视觉模型，生成候选区域…", "working");
+    setBusy(true, "ground");
+    setStatus("正在把图片和描述发送给已配置的视觉模型，生成候选区域…", "working");
 
     try {
       const response = await fetch("/api/ground", {
@@ -529,12 +680,6 @@
       setMode("box");
       setBusy(false);
 
-      if (startAfterGrounding) {
-        setStatus("已找到候选区域，现在交给 SAM2 生成轮廓…", "working");
-        await startSegmentation();
-        return;
-      }
-
       const note = typeof result.note === "string" && result.note ? " " + result.note : "";
       setStatus(candidates.length > 1
         ? "Qwen 返回了 " + String(candidates.length) + " 个候选区域，请选择最符合的一项。" + note
@@ -542,6 +687,137 @@
     } catch (error) {
       setBusy(false);
       setStatus(error.message, "error");
+    }
+  }
+
+  async function startAgent() {
+    if (!state.imageId) {
+      setStatus("请先选择一张图片。", "error");
+      return;
+    }
+    if (!description.value.trim()) {
+      setStatus("请先写下你想分割的目标。", "error");
+      return;
+    }
+
+    clearGrounding();
+    clearQwenBox();
+    state.agentRunId = "pending";
+    state.agentPhase = "locating";
+    state.agentMessage = "我正在理解你的描述，并决定是直接分割、请你选择候选，还是请求一个手动提示。";
+    state.agentEvaluation = null;
+    redraw();
+    renderAgentPanel();
+    setBusy(true, "agent");
+    setStatus("Agent 正在用 Qwen 理解目标…", "working");
+
+    try {
+      const response = await fetch("/api/agent-runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_id: state.imageId, description: description.value.trim() }),
+      });
+      const result = await readResponse(response);
+      applyAgentRun(result);
+      setBusy(false);
+      setStatus(state.agentMessage, state.agentPhase === "needs_manual_prompt" ? "" : "success");
+    } catch (error) {
+      clearAgentState();
+      setBusy(false);
+      setStatus(error.message, "error");
+    }
+  }
+
+  async function chooseAgentCandidate(index) {
+    if (!state.agentRunId || state.agentRunId === "pending") {
+      return;
+    }
+    setBusy(true, "agent");
+    setStatus("Agent 正在确认你选择的候选区域…", "working");
+    try {
+      const response = await fetch("/api/agent-runs/" + encodeURIComponent(state.agentRunId) + "/choose", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_index: index }),
+      });
+      const result = await readResponse(response);
+      applyAgentRun(result);
+      setBusy(false);
+      setStatus(state.agentMessage, "success");
+    } catch (error) {
+      setBusy(false);
+      setStatus(error.message, "error");
+    }
+  }
+
+  function agentPromptPayload() {
+    return {
+      points: state.points.map((point) => ({ x: point.x, y: point.y, label: point.label })),
+      box: state.box ? [state.box.x0, state.box.y0, state.box.x1, state.box.y1] : null,
+    };
+  }
+
+  function startTrackingJob(job, fallbackMessage) {
+    if (!job || typeof job.job_id !== "string" || !job.job_id) {
+      throw new Error("任务没有返回编号，请重新提交。 ");
+    }
+    state.activeJobId = job.job_id;
+    state.pollUrl = safePollUrl(job.poll_url, job.job_id);
+    state.pollFailures = 0;
+    state.jobStartedAt = Date.now();
+    safeSessionSet(activeJobStorageKey, JSON.stringify({ id: state.activeJobId, pollUrl: state.pollUrl, startedAt: state.jobStartedAt }));
+    updateJobCard({
+      status: job.status || "queued",
+      phase: job.phase || "queued",
+      message: job.message || fallbackMessage || "任务已提交，正在等待本地引擎。",
+    });
+  }
+
+  async function startAgentSegmentation() {
+    if (!state.agentRunId || state.agentRunId === "pending") {
+      return startSegmentation();
+    }
+    const hasPositivePoint = state.points.some((point) => point.label === 1);
+    if (!state.box && !hasPositivePoint) {
+      setStatus("请至少添加一个包含点或一个框选；排除点只能用于细化。", "error");
+      return;
+    }
+    setBusy(true, "segment");
+    setStatus("Agent 已确认提示，正在把任务交给 SAM2…", "working");
+    updateJobCard({ status: "queued", phase: "queued", message: "Agent 正在进入本地分割队列。" });
+    try {
+      const response = await fetch("/api/agent-runs/" + encodeURIComponent(state.agentRunId) + "/segment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(agentPromptPayload()),
+      });
+      const result = await readResponse(response);
+      applyAgentRun(result);
+      startTrackingJob(result.job, "Agent 已提交任务，正在等待本地引擎。");
+      await pollJob();
+    } catch (error) {
+      finishJobWithError(error.message);
+    }
+  }
+
+  async function evaluateAgentResult() {
+    if (!state.agentRunId || state.agentRunId === "pending") {
+      return;
+    }
+    try {
+      const response = await fetch("/api/agent-runs/" + encodeURIComponent(state.agentRunId) + "/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const result = await readResponse(response);
+      applyAgentRun(result);
+      if (state.agentPhase === "needs_refinement") {
+        setStatus(state.agentMessage, "");
+      }
+    } catch (error) {
+      // The finished SAM2 result remains useful even if the optional review failed.
+      setStatus("轮廓已生成；Agent 暂时无法完成质量复核。", "");
     }
   }
 
@@ -568,6 +844,9 @@
       setStatus("请先选择一张图片。", "error");
       return;
     }
+    if (state.agentRunId && state.agentRunId !== "pending" && ["needs_confirmation", "needs_manual_prompt", "ready_to_segment", "needs_refinement"].includes(state.agentPhase)) {
+      return startAgentSegmentation();
+    }
     const hasPositivePoint = state.points.some((point) => point.label === 1);
     if (!state.box && !hasPositivePoint) {
       setStatus("请至少添加一个包含点或一个框选；排除点只能用于细化。", "error");
@@ -585,19 +864,7 @@
         body: JSON.stringify(buildSegmentationPayload()),
       });
       const result = await readResponse(response);
-      if (typeof result.job_id !== "string" || !result.job_id) {
-        throw new Error("任务没有返回编号，请重新提交。 ");
-      }
-      state.activeJobId = result.job_id;
-      state.pollUrl = safePollUrl(result.poll_url, result.job_id);
-      state.pollFailures = 0;
-      state.jobStartedAt = Date.now();
-      safeSessionSet(activeJobStorageKey, JSON.stringify({ id: state.activeJobId, pollUrl: state.pollUrl, startedAt: state.jobStartedAt }));
-      updateJobCard({
-        status: result.status || "queued",
-        phase: "queued",
-        message: "任务已提交，正在等待本地引擎。",
-      });
+      startTrackingJob(result, "任务已提交，正在等待本地引擎。");
       await pollJob();
     } catch (error) {
       finishJobWithError(error.message);
@@ -710,6 +977,9 @@
     setBusy(false);
     updateJobCard(job);
     if (!succeeded) {
+      if (state.agentRunId && state.agentRunId !== "pending") {
+        void evaluateAgentResult();
+      }
       finishJobWithError(typeof job.error === "string" ? job.error : job.message);
       return;
     }
@@ -717,6 +987,9 @@
       displayResult(job);
       setStatus("轮廓已经生成。可以下载 Mask、透明轮廓或 JSON。", "success");
       resultSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      if (state.agentRunId && state.agentRunId !== "pending") {
+        void evaluateAgentResult();
+      }
     } catch (error) {
       setStatus(error.message, "error");
     }
@@ -818,14 +1091,15 @@
 
   description.addEventListener("input", () => {
     updateDescriptionCount();
-    if (state.groundingId) {
+    if (state.groundingId || state.agentRunId) {
       const clearsQwenBox = state.boxSource === "qwen";
       clearGrounding();
+      clearAgentState();
       if (clearsQwenBox) {
         clearQwenBox();
         redraw();
       }
-      setStatus("目标描述已修改，之前的自动定位已失效；需要时请重新定位。", "");
+      setStatus("目标描述已修改，之前的 Agent 分析已失效；需要时请重新分析图片。", "");
     }
     refreshActions();
   });
@@ -834,8 +1108,8 @@
     button.addEventListener("click", () => setMode(button.dataset.mode));
   });
   resetPromptsButton.addEventListener("click", () => resetPrompts());
-  groundButton.addEventListener("click", () => autoGround({ startAfterGrounding: false }));
-  runButton.addEventListener("click", () => autoGround({ startAfterGrounding: true }));
+  groundButton.addEventListener("click", autoGround);
+  runButton.addEventListener("click", startAgent);
   segmentButton.addEventListener("click", startSegmentation);
 
   canvas.addEventListener("pointerdown", (event) => {
@@ -848,6 +1122,11 @@
       state.draftBox = { x0: point.x, y0: point.y, x1: point.x, y1: point.y };
       canvas.setPointerCapture(event.pointerId);
     } else {
+      if (state.agentRunId && state.agentPhase === "needs_choice") {
+        clearAgentState();
+        clearGrounding();
+        setStatus("已切换到手动提示。包含点会直接交给 SAM2。", "");
+      }
       state.points.push({ x: point.x, y: point.y, label: state.mode === "positive" ? 1 : 0 });
       refreshActions();
     }
@@ -872,6 +1151,10 @@
     if (completed.x1 - completed.x0 >= 2 && completed.y1 - completed.y0 >= 2) {
       state.box = completed;
       state.boxSource = "manual";
+      const keepsManualAgent = state.agentRunId && state.agentPhase === "needs_manual_prompt";
+      if (!keepsManualAgent) {
+        clearAgentState();
+      }
       clearGrounding();
       setStatus("框选已添加。还可以添加正、负点来微调边界。", "success");
     } else {
