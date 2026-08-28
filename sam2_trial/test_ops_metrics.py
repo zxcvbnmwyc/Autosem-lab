@@ -202,6 +202,7 @@ class OpsMetricsApiTests(unittest.TestCase):
         )
 
         timings = payload["timings"]
+        self._assert_timing(timings["upload_ms"], count=1, average=130, median=130, minimum=130, maximum=130)
         self._assert_timing(timings["grounding_ms"], count=1, average=1200, median=1200, minimum=1200, maximum=1200)
         self._assert_timing(timings["sam2_ms"], count=2, average=4700, median=4700, minimum=4200, maximum=5200)
         self._assert_timing(timings["queue_wait_ms"], count=2, average=240, median=240, minimum=80, maximum=400)

@@ -74,6 +74,7 @@ class JobApiTests(unittest.TestCase):
             content_type="multipart/form-data",
         )
         self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.headers.get("Server-Timing", "").startswith("upload;dur="))
         return response.get_json()
 
     def test_segment_job_returns_immediately_then_persists_result(self) -> None:

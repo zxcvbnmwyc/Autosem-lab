@@ -42,7 +42,7 @@ class GroundingError(RuntimeError):
 
 @dataclass(frozen=True)
 class GroundingCandidate:
-    """A candidate box in the fixed 0 to 1000 coordinate system."""
+    """A candidate box and optional interior anchor point in 0–1000 space."""
 
     x0: float
     y0: float
@@ -50,6 +50,8 @@ class GroundingCandidate:
     y1: float
     confidence: float
     label: str | None
+    point_x: float | None = None
+    point_y: float | None = None
 
     def absolute_box(self, width: int, height: int) -> list[float]:
         if width < 2 or height < 2:
@@ -63,10 +65,23 @@ class GroundingCandidate:
             self.y1 * y_scale,
         ]
 
+    def absolute_point(self, width: int, height: int) -> list[float] | None:
+        if self.point_x is None or self.point_y is None:
+            return None
+        if width < 2 or height < 2:
+            raise ValueError("图片至少需要 2 个像素宽和高。")
+        return [
+            self.point_x * (width - 1) / NORMALIZED_COORDINATE_MAX,
+            self.point_y * (height - 1) / NORMALIZED_COORDINATE_MAX,
+        ]
+
     def as_metadata(self, width: int, height: int) -> dict[str, Any]:
+        point_1000 = [self.point_x, self.point_y] if self.point_x is not None and self.point_y is not None else None
         return {
             "box_xyxy": self.absolute_box(width, height),
             "box_1000": [self.x0, self.y0, self.x1, self.y1],
+            "point_xy": self.absolute_point(width, height),
+            "point_1000": point_1000,
             "confidence": self.confidence,
             "label": self.label,
         }
@@ -154,7 +169,19 @@ def _parse_candidate(value: Any, index: int) -> GroundingCandidate:
     if label is not None and not isinstance(label, str):
         raise GroundingError("Qwen 返回的候选框标签不是文字。")
     label = label.strip()[:80] if isinstance(label, str) else None
-    return GroundingCandidate(x0, y0, x1, y1, confidence, label or None)
+    point = value.get("point")
+    point_x: float | None = None
+    point_y: float | None = None
+    if point is not None:
+        if not isinstance(point, dict):
+            raise GroundingError(f"Qwen 返回的第 {index} 个候选内部点格式错误。")
+        point_x = _number(point.get("x"), f"boxes[{index}].point.x")
+        point_y = _number(point.get("y"), f"boxes[{index}].point.y")
+        if not 0 <= point_x <= NORMALIZED_COORDINATE_MAX or not 0 <= point_y <= NORMALIZED_COORDINATE_MAX:
+            raise GroundingError("Qwen 返回的候选内部点超出 0 到 1000 的坐标范围。")
+        if not x0 < point_x < x1 or not y0 < point_y < y1:
+            raise GroundingError("Qwen 返回的候选内部点必须位于候选框内部。")
+    return GroundingCandidate(x0, y0, x1, y1, confidence, label or None, point_x, point_y)
 
 
 def parse_grounding_payload(value: Any) -> GroundingProposal:
@@ -231,10 +258,13 @@ def _model_request(
         "Return exactly this JSON shape: "
         '{"status":"found|ambiguous|not_found","boxes":'
         '[{"x0":number,"y0":number,"x1":number,"y1":number,'
-        '"confidence":number,"label":string|null}],"note":string|null}. '
+        '"confidence":number,"label":string|null,'
+        '"point":{"x":number,"y":number}|null}],"note":string|null}. '
         "Choose at most three tight boxes. If the target is absent, return "
         "status not_found and an empty boxes array. "
-        "Do not claim pixel-perfect contours; SAM2 will refine the box."
+        "For each found object, return point only when you can place it clearly "
+        "inside the visible target and away from its boundary; otherwise use null. "
+        "Do not claim pixel-perfect contours; SAM2 will refine the prompt."
     )
     return {
         "model": model,

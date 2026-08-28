@@ -39,6 +39,11 @@
   };
 
   const timingElements = {
+    upload: {
+      median: document.querySelector("#upload-median"),
+      p90: document.querySelector("#upload-p90"),
+      count: document.querySelector("#upload-count"),
+    },
     qwen: {
       median: document.querySelector("#qwen-median"),
       p90: document.querySelector("#qwen-p90"),
@@ -229,6 +234,7 @@
     metricElements.qwen.textContent = count(summary.grounding_requests ?? summary.qwen_requests);
     metricElements.agent.textContent = count(summary.agent_runs);
 
+    renderTiming(timingElements.upload, timings.upload_ms);
     renderTiming(timingElements.qwen, timings.grounding_ms ?? timings.qwen);
     renderTiming(timingElements.sam2, timings.sam2_ms ?? timings.sam2);
     const coreTiming = timings.sam2_core_ms;

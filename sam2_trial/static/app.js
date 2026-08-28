@@ -525,6 +525,23 @@
     return payload;
   }
 
+  function serverTimingDuration(value, metric) {
+    if (typeof value !== "string" || !metric) {
+      return null;
+    }
+    const escaped = String(metric).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp("(?:^|,)\\s*" + escaped + "\\s*;\\s*dur=([0-9.]+)", "i").exec(value);
+    return match ? num(match[1]) : null;
+  }
+
+  function shortDuration(milliseconds) {
+    const value = num(milliseconds);
+    if (value === null || value < 0) {
+      return null;
+    }
+    return value < 1000 ? String(Math.round(value)) + " ms" : (value / 1000).toFixed(1) + " 秒";
+  }
+
   function clearLocalPreview() {
     if (state.localPreviewUrl) {
       URL.revokeObjectURL(state.localPreviewUrl);
@@ -604,10 +621,12 @@
     form.append("image", file);
     setBusy(true, "upload");
     setStatus("正在准备本地预览并上传图片…", "working");
+    const uploadStartedAt = performance.now();
     const localPreview = beginLocalPreview(file, previewToken);
 
     try {
       const response = await fetch("/api/upload", { method: "POST", body: form });
+      const serverUploadMs = serverTimingDuration(response.headers.get("Server-Timing"), "upload");
       const payload = await readResponse(response);
       const local = await localPreview;
       if (previewToken !== state.previewToken) {
@@ -628,7 +647,12 @@
         await loadServerPreview(payload.preview_url || payload.image_url, sourceWidth, sourceHeight, previewToken);
       }
       setBusy(false);
-      setStatus("图片已载入。可以让 Qwen 自动定位，或直接在图上添加提示。", "success");
+      const timings = ["本次用时 " + shortDuration(performance.now() - uploadStartedAt)];
+      const serverTiming = shortDuration(serverUploadMs);
+      if (serverTiming) {
+        timings.push("服务器处理 " + serverTiming);
+      }
+      setStatus("图片已载入（" + timings.join("；") + "）。可以让 Qwen 自动定位，或直接在图上添加提示。", "success");
     } catch (error) {
       setBusy(false);
       setStatus(error.message, "error");

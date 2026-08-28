@@ -70,6 +70,13 @@ def _environment_int(name: str, default: int, minimum: int = 0) -> int:
     return value if value >= minimum else default
 
 
+def _environment_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 DATA_DIR = APP_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 IMAGE_PREVIEW_DIR = DATA_DIR / "previews"
@@ -111,6 +118,7 @@ PREVIEW_JPEG_QUALITY = min(_environment_int("PREVIEW_JPEG_QUALITY", 84, 40), 92)
 CLEANUP_INTERVAL_SECONDS = _environment_int("CLEANUP_INTERVAL_SECONDS", 15 * 60, 60)
 METRICS_RETENTION_DAYS = _environment_int("METRICS_RETENTION_DAYS", 30, 1)
 OPS_DASHBOARD_TOKEN = os.environ.get("OPS_DASHBOARD_TOKEN", "").strip()
+QWEN_REPRESENTATIVE_POINT_ENABLED = _environment_bool("QWEN_REPRESENTATIVE_POINT_ENABLED")
 MAX_PROMPT_POINTS = 24
 MAX_DESCRIPTION_CHARS = 500
 AGENT_AUTO_SEGMENT_CONFIDENCE = 0.75
@@ -288,6 +296,11 @@ def _metrics_report(window_hours: int) -> dict[str, Any]:
     grounding_durations = [
         value for event in by_kind["grounding"] if (value := _metric_number(event.get("duration_ms"))) is not None
     ]
+    upload_durations = [
+        value
+        for event in by_kind["upload"]
+        if (value := _metric_number(event.get("duration_ms"))) is not None and value > 0
+    ]
     sam2_job_durations = [
         value for event in segment_events if (value := _metric_number(event.get("duration_ms"))) is not None
     ]
@@ -319,6 +332,7 @@ def _metrics_report(window_hours: int) -> dict[str, Any]:
             "agent_runs": len(by_kind["agent_run"]),
         },
         "timings": {
+            "upload_ms": _duration_summary(upload_durations),
             "grounding_ms": _duration_summary(grounding_durations),
             "sam2_ms": _duration_summary(sam2_job_durations),
             "queue_wait_ms": _duration_summary(queue_waits),
@@ -478,6 +492,8 @@ class GroundingRecord:
                         "y1": candidate.y1,
                         "confidence": candidate.confidence,
                         "label": candidate.label,
+                        "point_x": candidate.point_x,
+                        "point_y": candidate.point_y,
                     }
                     for candidate in self.proposal.candidates
                 ],
@@ -499,6 +515,12 @@ class GroundingRecord:
                     float(candidate["y1"]),
                     float(candidate["confidence"]),
                     candidate.get("label") if isinstance(candidate.get("label"), str) else None,
+                    float(candidate["point_x"])
+                    if isinstance(candidate.get("point_x"), (int, float)) and not isinstance(candidate.get("point_x"), bool)
+                    else None,
+                    float(candidate["point_y"])
+                    if isinstance(candidate.get("point_y"), (int, float)) and not isinstance(candidate.get("point_y"), bool)
+                    else None,
                 )
                 for candidate in raw_candidates
                 if isinstance(candidate, dict)
@@ -1185,6 +1207,22 @@ def _render_transparent_contours(mask: np.ndarray, contours: list[np.ndarray] | 
     return rendered
 
 
+def _grounding_representative_point(
+    record: ImageRecord,
+    grounding: GroundingRecord | None,
+    candidate_index: int | None,
+) -> dict[str, float | int] | None:
+    """Return one server-validated positive point from the selected Qwen candidate."""
+    if not QWEN_REPRESENTATIVE_POINT_ENABLED or grounding is None or candidate_index is None:
+        return None
+    if not 0 <= candidate_index < len(grounding.proposal.candidates):
+        return None
+    point = grounding.proposal.candidates[candidate_index].absolute_point(record.width, record.height)
+    if point is None:
+        return None
+    return {"x": point[0], "y": point[1], "label": 1}
+
+
 def _serialize_prompt(record: ImageRecord, payload: dict[str, Any]) -> dict[str, Any]:
     point_coords, point_labels, points = _parse_points(payload.get("points"), record.width, record.height)
     box, normalized_box = _parse_box(payload.get("box"), record.width, record.height)
@@ -1194,6 +1232,9 @@ def _serialize_prompt(record: ImageRecord, payload: dict[str, Any]) -> dict[str,
     if box is None and (point_labels is None or not bool(np.any(point_labels == 1))):
         raise ValueError("请至少添加一个包含点或一个框选；排除点只能用于细化。")
     del point_coords, point_labels
+    representative_point = _grounding_representative_point(record, grounding, candidate_index)
+    if representative_point is not None and len(points) < MAX_PROMPT_POINTS:
+        points.append(representative_point)
     grounding_metadata = None
     if grounding is not None:
         grounding_metadata = grounding.as_metadata(record.width, record.height)
@@ -1594,6 +1635,7 @@ def runtime_status() -> Any:
 
 @app.post("/api/upload")
 def upload() -> Any:
+    started_at = time.perf_counter()
     owner_id = _current_owner()
     limited = _limit_or_error(owner_id, "upload", 12, 60 * 60)
     if limited is not None:
@@ -1655,8 +1697,9 @@ def upload() -> Any:
     _json_write(_image_meta_path(image_id), record.as_storage())
     with records_lock:
         records[image_id] = record
-    _record_metric("upload", owner_id=owner_id)
-    return jsonify({
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    _record_metric("upload", owner_id=owner_id, duration_ms=elapsed_ms)
+    response = jsonify({
         "image_id": image_id,
         "image_url": f"/media/images/{image_id}",
         "preview_url": f"/media/previews/{image_id}",
@@ -1665,7 +1708,11 @@ def upload() -> Any:
         "preview_width": preview_width,
         "preview_height": preview_height,
         "expires_at": record.expires_at,
-    }), 201
+    })
+    # This covers work inside the app after the request body reaches Flask.
+    # Browser-side elapsed time additionally includes image decoding and network transfer.
+    response.headers["Server-Timing"] = f"upload;dur={elapsed_ms:.2f}"
+    return response, 201
 
 
 def _send_owned_media(directory: Path, filename: str, *, as_attachment: bool = False) -> Any:

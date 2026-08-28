@@ -185,6 +185,26 @@ class AgentApiTests(unittest.TestCase):
         self.assertGreater(self.engine.calls[0]["box"][0], 5.0)
         self.assertNotEqual(self.engine.calls[0]["box"], [0.0, 0.0, 2.0, 2.0])
 
+    def test_agent_adds_qwen_representative_point_when_enabled(self) -> None:
+        self.grounder.proposal = GroundingProposal(
+            "found",
+            (GroundingCandidate(100, 150, 700, 800, 0.91, "object", 400, 500),),
+            "test proposal",
+        )
+        with patch.object(application, "QWEN_REPRESENTATIVE_POINT_ENABLED", True):
+            _uploaded, run = self._start()
+            started = self.client.post(
+                f"/api/agent-runs/{run['agent_id']}/segment",
+                json={},
+            )
+            self.assertEqual(started.status_code, 202)
+            self._wait_for_job(started.get_json()["job"])
+
+        self.assertEqual(len(self.engine.calls), 1)
+        self.assertEqual(self.engine.calls[0]["labels"], [1])
+        self.assertAlmostEqual(self.engine.calls[0]["points"][0][0], 9.2, places=5)
+        self.assertAlmostEqual(self.engine.calls[0]["points"][0][1], 8.5, places=5)
+
     def test_not_found_and_disabled_qwen_fall_back_to_manual_prompt(self) -> None:
         self.grounder.proposal = GroundingProposal("not_found", (), "not present")
         uploaded, run = self._start()

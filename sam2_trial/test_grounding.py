@@ -51,6 +51,46 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(public["candidate"]["box_xyxy"], [100.0, 100.0, 900.0, 400.0])
         self.assertEqual(public["candidate"]["box_1000"], [100.0, 200.0, 900.0, 800.0])
 
+    def test_representative_point_maps_to_original_image_coordinates(self) -> None:
+        proposal = parse_grounding_payload(
+            {
+                "status": "found",
+                "boxes": [
+                    {
+                        "x0": 100,
+                        "y0": 200,
+                        "x1": 900,
+                        "y1": 800,
+                        "point": {"x": 400, "y": 500},
+                        "confidence": 0.75,
+                        "label": "cup",
+                    }
+                ],
+                "note": "one object",
+            }
+        )
+        public = proposal.as_public(1001, 501)
+        self.assertEqual(public["candidate"]["point_1000"], [400.0, 500.0])
+        self.assertEqual(public["candidate"]["point_xy"], [400.0, 250.0])
+
+    def test_representative_point_outside_box_is_rejected(self) -> None:
+        with self.assertRaises(GroundingError):
+            parse_grounding_payload(
+                {
+                    "status": "found",
+                    "boxes": [
+                        {
+                            "x0": 100,
+                            "y0": 200,
+                            "x1": 900,
+                            "y1": 800,
+                            "point": {"x": 50, "y": 500},
+                            "confidence": 0.75,
+                        }
+                    ],
+                }
+            )
+
     def test_not_found_requires_no_boxes(self) -> None:
         proposal = parse_grounding_payload(
             {"status": "not_found", "boxes": [], "note": None}
@@ -98,6 +138,7 @@ class GroundingTests(unittest.TestCase):
         self.assertFalse(request["enable_thinking"])
         self.assertEqual(request["response_format"], {"type": "json_object"})
         self.assertIn("JSON", request["messages"][0]["content"])
+        self.assertIn('"point"', request["messages"][0]["content"])
         parts = request["messages"][1]["content"]
         self.assertEqual(parts[0]["type"], "image_url")
         self.assertEqual(parts[0]["image_url"]["url"], "data:image/jpeg;base64,abc")

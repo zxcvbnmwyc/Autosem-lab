@@ -134,6 +134,15 @@
 
         <div class="timing-grid" aria-live="polite">
           <article class="timing-card">
+            <div class="timing-card__head"><span class="timing-dot timing-dot--blue" aria-hidden="true"></span><h3>图片处理</h3></div>
+            <dl>
+              <div><dt>中位数</dt><dd id="upload-median">—</dd></div>
+              <div><dt>P90</dt><dd id="upload-p90">—</dd></div>
+              <div><dt>样本数</dt><dd id="upload-count">—</dd></div>
+            </dl>
+            <p>图片到达服务器后的解码、保存与预览生成；不含网络传输。</p>
+          </article>
+          <article class="timing-card">
             <div class="timing-card__head"><span class="timing-dot timing-dot--blue" aria-hidden="true"></span><h3>Qwen 定位</h3></div>
             <dl>
               <div><dt>中位数</dt><dd id="qwen-median">—</dd></div>
