@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="AutoSEM：用自然语言定位，再用 SAM2 生成可下载的像素级轮廓。">
+    <title>工作台 · AutoSEM</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
+  </head>
+  <body class="workspace-page">
+    <a class="skip-link" href="#workspace">跳到工作区</a>
+
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="/" aria-label="AutoSEM 首页">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>AutoSEM</span>
+        </a>
+        <nav class="site-nav" aria-label="主导航">
+          <a href="/">首页</a>
+          <a href="/workspace" aria-current="page">工作台</a>
+          <a href="/guide">使用指南</a>
+          <a href="/privacy">隐私说明</a>
+        </nav>
+        <div id="runtime-chip" class="runtime-chip" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>正在检查本地引擎</span>
+        </div>
+      </div>
+    </header>
+
+    <main id="workspace" class="workspace-layout">
+      <section class="workspace-intro" aria-labelledby="workspace-title">
+        <div>
+          <p class="eyebrow">AUTOMATIC SEMANTIC SEGMENTATION</p>
+          <h1 id="workspace-title">从一句描述，到一个干净的轮廓。</h1>
+          <p>先用 Qwen 理解你要找的对象，再由本地 SAM2 提取像素级边界。你也可以完全跳过云端定位，直接用点和框进行分割。</p>
+        </div>
+        <aside class="privacy-note">
+          <strong>数据边界</strong>
+          <span>只有点击 Qwen 自动定位时，图片和描述才会发送到你配置的模型服务；SAM2 分割和结果文件保留在本机。</span>
+        </aside>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel input-panel" aria-labelledby="input-title">
+          <div class="panel-heading">
+            <span class="step-number">01</span>
+            <div>
+              <h2 id="input-title">输入目标</h2>
+              <p>上传一张图片，再告诉 AutoSEM 你想要什么。</p>
+            </div>
+          </div>
+
+          <label id="upload-control" class="upload-control" for="file-input">
+            <span class="upload-icon" aria-hidden="true">↑</span>
+            <span class="upload-copy"><b>选择本地图片</b><small>JPG、PNG 或 WebP，最大 25 MB</small></span>
+            <span class="upload-action">浏览</span>
+            <input id="file-input" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp">
+          </label>
+          <p id="file-name" class="file-name" aria-live="polite">尚未选择图片</p>
+
+          <label class="field-label" for="description">你想分割什么？</label>
+          <textarea id="description" maxlength="500" rows="4" placeholder="例如：中间的深色纵向连接区域"></textarea>
+          <div class="field-meta">
+            <span>描述越具体，自动定位越可靠。</span>
+            <span id="description-count">0 / 500</span>
+          </div>
+
+          <div class="primary-actions">
+            <button id="run-button" class="button button--primary" type="button" disabled>
+              <span aria-hidden="true">✦</span> 自动定位并生成轮廓
+            </button>
+            <button id="ground-button" class="button button--secondary" type="button" disabled>
+              仅自动定位
+            </button>
+          </div>
+          <p id="grounding-status" class="engine-note" aria-live="polite">正在检查视觉模型配置…</p>
+
+          <div class="divider"></div>
+
+          <div class="panel-heading panel-heading--compact">
+            <span class="step-number">02</span>
+            <div>
+              <h2>细化提示</h2>
+              <p>可在画布上加点或框选；这一步始终在本机进行。</p>
+            </div>
+          </div>
+
+          <div class="toolbar" aria-label="提示工具">
+            <button class="mode-button selected" type="button" data-mode="positive" aria-pressed="true">
+              <span class="prompt-dot prompt-dot--positive" aria-hidden="true"></span> 包含点
+            </button>
+            <button class="mode-button" type="button" data-mode="negative" aria-pressed="false">
+              <span class="prompt-dot prompt-dot--negative" aria-hidden="true"></span> 排除点
+            </button>
+            <button class="mode-button" type="button" data-mode="box" aria-pressed="false">
+              <span class="box-icon" aria-hidden="true"></span> 框选
+            </button>
+            <button id="reset-prompts" class="text-button" type="button">清空</button>
+          </div>
+          <p id="mode-help" class="tool-help">在目标主体内部点击，放置绿色包含点。</p>
+
+          <div id="candidate-choices" class="candidate-choices" hidden aria-live="polite"></div>
+        </section>
+
+        <section class="panel canvas-panel" aria-labelledby="canvas-title">
+          <div class="canvas-panel__top">
+            <div>
+              <div class="panel-heading panel-heading--compact">
+                <span class="step-number">03</span>
+                <div>
+                  <h2 id="canvas-title">确认边界</h2>
+                  <p>选择候选框，或在图片上添加自己的提示。</p>
+                </div>
+              </div>
+            </div>
+            <button id="segment-button" class="button button--dark" type="button" disabled>生成轮廓</button>
+          </div>
+
+          <p id="status" class="status-message" role="status">先选择一张图片。</p>
+          <div id="canvas-empty" class="canvas-empty">
+            <span class="canvas-empty__icon" aria-hidden="true">◎</span>
+            <strong>图片会显示在这里</strong>
+            <span>上传后，可直接点选、框选，或让 Qwen 推荐候选区域。</span>
+          </div>
+          <div id="canvas-shell" class="canvas-shell" hidden>
+            <canvas id="image-canvas" aria-label="图片标注区域"></canvas>
+          </div>
+          <div class="canvas-legend" aria-label="提示图例">
+            <span><i class="legend-dot legend-dot--positive"></i>包含</span>
+            <span><i class="legend-dot legend-dot--negative"></i>排除</span>
+            <span><i class="legend-box"></i>框选</span>
+          </div>
+        </section>
+
+        <aside class="panel job-panel" aria-labelledby="job-title">
+          <div class="panel-heading panel-heading--compact">
+            <span class="step-number">04</span>
+            <div>
+              <h2 id="job-title">任务与结果</h2>
+              <p>本地推理会在后台排队，页面可保持响应。</p>
+            </div>
+          </div>
+
+          <div id="job-card" class="job-card job-card--idle" aria-live="polite">
+            <div class="job-card__top">
+              <span id="job-badge" class="job-badge">等待任务</span>
+              <span id="job-elapsed" class="job-elapsed"></span>
+            </div>
+            <strong id="job-title-text">还没有开始分割</strong>
+            <p id="job-message">添加点或框选后，点击“生成轮廓”。</p>
+            <div class="job-progress" aria-hidden="true"><span id="job-progress-bar"></span></div>
+          </div>
+
+          <div id="result-section" class="result-section" hidden aria-labelledby="result-heading">
+            <div class="result-heading-row">
+              <h3 id="result-heading">已生成</h3>
+              <span class="result-check" aria-label="完成">✓</span>
+            </div>
+            <img id="result-preview" alt="SAM2 分割叠加预览">
+            <p id="result-summary" class="result-summary"></p>
+            <p class="result-disclaimer">估计 IoU 用于 SAM2 候选排序，并不等同于结果正确率。</p>
+            <div class="download-links">
+              <a id="mask-link" href="#" download>Mask PNG</a>
+              <a id="contours-link" href="#" download>透明轮廓 PNG</a>
+              <a id="json-link" href="#" download>轮廓 JSON</a>
+            </div>
+          </div>
+
+          <div class="runtime-detail">
+            <span>当前引擎</span>
+            <strong id="runtime-detail">正在读取…</strong>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a>
+        <p>语义定位与像素级分割之间，留出可检查、可修正的一步。</p>
+      </div>
+      <div class="footer-links">
+        <a href="/guide">使用指南</a>
+        <a href="/privacy">隐私说明</a>
+      </div>
+    </footer>
+    <script src="{{ url_for('static', filename='app.js', v=static_version) }}"></script>
+  </body>
+</html>

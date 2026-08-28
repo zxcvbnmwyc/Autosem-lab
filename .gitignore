@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+sam3_trial/results/
+sam3_trial/samples/
+sam3_trial/models/
+sam2_trial/data/
+sam2_trial/models/
+.venv/
+.env

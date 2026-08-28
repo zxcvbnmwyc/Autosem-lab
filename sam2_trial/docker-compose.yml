@@ -1,0 +1,62 @@
+name: autosem
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # The app should use these after the CPU fallback is enabled in app.py.
+      SAM2_DEVICE: cpu
+      SAM2_MODEL_VARIANT: tiny
+      SAM2_MODEL_NAME: sam2.1_hiera_tiny
+      SAM2_SOURCE: /opt/sam2
+      SAM2_CHECKPOINT: /models/sam2.1_hiera_tiny.pt
+      SAM2_MODEL_CONFIG: configs/sam2.1/sam2.1_hiera_t.yaml
+      # Reserve one of the four vCPUs for uploads, status polling and Nginx.
+      SAM2_CPU_THREADS: ${SAM2_CPU_THREADS:-3}
+      SAM2_MAX_IMAGE_EDGE: ${SAM2_MAX_IMAGE_EDGE:-1280}
+      SAM2_MAX_QUEUE: ${SAM2_MAX_QUEUE:-8}
+      DATA_TTL_HOURS: ${DATA_TTL_HOURS:-72}
+      DISPLAY_MAX_IMAGE_EDGE: ${DISPLAY_MAX_IMAGE_EDGE:-1600}
+      RESULT_PREVIEW_MAX_EDGE: ${RESULT_PREVIEW_MAX_EDGE:-1200}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-900}
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-3}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-3}
+    volumes:
+      # Keep uploads and generated masks across container rebuilds.
+      - sam2_data:/app/data
+      # Put the downloaded tiny checkpoint in ./models on the server.
+      - ./models:/models:ro
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/usr/share/nginx/html/static:ro
+
+volumes:
+  sam2_data:

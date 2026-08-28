@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="AutoSEM 使用指南：自动定位、点和框提示、结果导出。">
+    <title>使用指南 · AutoSEM</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
+  </head>
+  <body class="document-page">
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="/" aria-label="AutoSEM 首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a>
+        <nav class="site-nav" aria-label="主导航"><a href="/">首页</a><a href="/workspace">工作台</a><a href="/guide" aria-current="page">使用指南</a><a href="/privacy">隐私说明</a></nav>
+        <a class="button button--dark site-cta" href="/workspace">打开工作台 <span aria-hidden="true">↗</span></a>
+      </div>
+    </header>
+
+    <main class="document-shell">
+      <aside class="document-toc" aria-label="本页目录">
+        <span>使用指南</span>
+        <a href="#start">开始前</a>
+        <a href="#auto">自动定位</a>
+        <a href="#manual">手动提示</a>
+        <a href="#result">结果与导出</a>
+      </aside>
+      <article class="document-content">
+        <p class="eyebrow">GUIDE</p>
+        <h1>把模糊的“想要”，<br>变成清晰的轮廓。</h1>
+        <p class="document-lead">AutoSEM 的核心流程很简单：上传图片 → 给出目标 → 检查提示 → 生成并导出轮廓。自动定位能节省时间，手动提示让你在需要时收紧结果。</p>
+
+        <section id="start">
+          <span class="content-step">01</span>
+          <h2>开始前</h2>
+          <p>支持 JPG、PNG 与 WebP，单张图片最大 25 MB。上传后的图片会显示在工作台中央。你可以直接在画布中点选或框选，不必填写描述。</p>
+          <div class="guide-note"><strong>一个实用原则</strong><span>把目标说成“位置 + 外观 + 对象”。例如“左下角的蓝色杯子”通常比“杯子”更容易定位。</span></div>
+        </section>
+
+        <section id="auto">
+          <span class="content-step">02</span>
+          <h2>使用自动定位</h2>
+          <p>填写描述后，可以选择两种方式：</p>
+          <div class="guide-options">
+            <div><b>自动定位并生成轮廓</b><p>Qwen 先返回最匹配的候选框，AutoSEM 随即将它交给 SAM2 完成分割。</p></div>
+            <div><b>仅自动定位</b><p>先查看候选框；你可以切换候选、补充点或重新框选，再自行点击生成。</p></div>
+          </div>
+          <p>当你点击自动定位，当前图片和描述会发送到已配置的视觉模型服务。候选框不是最终轮廓，而是给 SAM2 的空间提示。</p>
+        </section>
+
+        <section id="manual">
+          <span class="content-step">03</span>
+          <h2>用点和框细化</h2>
+          <div class="prompt-guide">
+            <div><span class="prompt-dot prompt-dot--positive"></span><b>包含点</b><p>点在你希望保留的目标内部。主体中心通常是最有效的第一个点。</p></div>
+            <div><span class="prompt-dot prompt-dot--negative"></span><b>排除点</b><p>点在不属于目标、却被误包含的区域，用来让边界收紧。</p></div>
+            <div><span class="box-icon"></span><b>框选</b><p>拖动一个刚好包住目标的框。它可以单独使用，也能配合点提示。</p></div>
+          </div>
+          <p>对于复杂图像，先用一个框确定范围，再添加 1–2 个包含点；如果把邻近物体一起选进来了，再添加一个排除点。提示应尽量远离边界。</p>
+        </section>
+
+        <section id="result">
+          <span class="content-step">04</span>
+          <h2>结果与导出</h2>
+          <p>提交后，任务会显示排队或运行状态。CPU 推理的时间会随图片大小、提示数量和本机配置变化，因此工作台不会承诺固定用时。</p>
+          <ul>
+            <li><b>Mask PNG：</b>黑白二值掩码，适合继续处理。</li>
+            <li><b>透明轮廓 PNG：</b>保留透明背景的轮廓图，便于叠加查看。</li>
+            <li><b>轮廓 JSON：</b>轮廓的结构化坐标数据，可用于下游工具。</li>
+          </ul>
+          <a class="button button--primary" href="/workspace">去工作台试一次 <span aria-hidden="true">→</span></a>
+        </section>
+      </article>
+    </main>
+
+    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>语义定位与像素级分割之间，留出可检查、可修正的一步。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/privacy">隐私说明</a></div></footer>
+  </body>
+</html>
