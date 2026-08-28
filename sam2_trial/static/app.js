@@ -542,7 +542,8 @@
     canvas.width = Math.max(2, Math.round(width * scale));
     canvas.height = Math.max(2, Math.round(height * scale));
     canvasEmpty.hidden = true;
-    canvasShell.hidden = false;
+    canvas.hidden = false;
+    canvasShell.classList.add("canvas-shell--has-image");
     redraw();
   }
 

@@ -132,13 +132,13 @@
           </div>
 
           <p id="status" class="status-message" role="status">先选择一张图片。</p>
-          <div id="canvas-empty" class="canvas-empty">
-            <span class="canvas-empty__icon" aria-hidden="true">◎</span>
-            <strong>图片会显示在这里</strong>
-            <span>上传后，可直接点选、框选，或让 Qwen 推荐候选区域。</span>
-          </div>
-          <div id="canvas-shell" class="canvas-shell" hidden>
-            <canvas id="image-canvas" aria-label="图片标注区域"></canvas>
+          <div id="canvas-shell" class="canvas-shell">
+            <div id="canvas-empty" class="canvas-empty">
+              <span class="canvas-empty__icon" aria-hidden="true">◎</span>
+              <strong>图片会显示在这里</strong>
+              <span>上传后，可直接点选、框选，或让 Qwen 推荐候选区域。</span>
+            </div>
+            <canvas id="image-canvas" aria-label="图片标注区域" hidden></canvas>
           </div>
           <div class="canvas-legend" aria-label="提示图例">
             <span><i class="legend-dot legend-dot--positive"></i>包含</span>

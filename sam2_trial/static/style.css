@@ -479,7 +479,6 @@ textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(24, 109,
 .status-message--success { color: var(--green); font-weight: 700; }
 .status-message--error { color: var(--red); font-weight: 750; }
 
-.canvas-empty,
 .canvas-shell {
   min-height: 430px;
   border: 1px dashed #b7c6b9;
@@ -487,10 +486,13 @@ textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(24, 109,
   background: #f9faf6;
 }
 
+.canvas-shell { display: grid; place-items: center; overflow: auto; padding: 12px; }
+.canvas-shell--has-image { min-height: 0; border-style: solid; border-color: #d2ded4; background: #f4f6f1; }
 .canvas-empty { display: grid; place-content: center; justify-items: center; gap: 7px; padding: 30px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.55; }
+.canvas-empty[hidden],
+.canvas-shell > canvas[hidden] { display: none !important; }
 .canvas-empty strong { color: var(--ink-soft); font-size: 15px; }
 .canvas-empty__icon { display: grid; place-items: center; width: 43px; height: 43px; margin-bottom: 3px; border: 1px solid #cfddd1; border-radius: 50%; color: var(--green); background: var(--green-pale); font-size: 28px; line-height: 1; }
-.canvas-shell { display: grid; place-items: center; overflow: auto; padding: 12px; background: #f4f6f1; }
 
 canvas { display: block; max-width: 100%; max-height: 63vh; width: auto; height: auto; box-shadow: 0 4px 15px rgba(24, 45, 34, 0.1); touch-action: none; cursor: copy; }
 
@@ -690,7 +692,8 @@ canvas { display: block; max-width: 100%; max-height: 63vh; width: auto; height:
   .job-card { margin-top: 15px; }
   .result-section { margin-top: 17px; padding-top: 17px; border-top: 1px solid var(--line); }
   .runtime-detail { margin-top: 21px; padding-top: 14px; border-top: 1px solid var(--line); }
-  .canvas-empty, .canvas-shell { min-height: 340px; }
+  .canvas-shell { min-height: 340px; }
+  .canvas-shell--has-image { min-height: 0; }
   .landing-hero { grid-template-columns: 1fr; min-height: 0; gap: 30px; padding: 53px 0 64px; }
   .hero-visual { min-height: 340px; max-width: 560px; width: calc(100% - 15px); margin-left: 10px; }
   .workflow-section, .feature-split, .boundary-section { padding: 64px 0; }
@@ -716,7 +719,8 @@ canvas { display: block; max-width: 100%; max-height: 63vh; width: auto; height:
   .panel-heading h2 { font-size: 15px; }
   .canvas-panel__top { gap: 10px; }
   .canvas-panel__top .button { min-width: 89px; padding: 0 9px; font-size: 12px; }
-  .canvas-empty, .canvas-shell { min-height: 260px; }
+  .canvas-shell { min-height: 260px; }
+  .canvas-shell--has-image { min-height: 0; }
   .field-meta { font-size: 10px; }
   .landing-hero h1 { font-size: clamp(39px, 12vw, 53px); }
   .landing-lead { font-size: 14px; }
