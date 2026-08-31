@@ -110,6 +110,8 @@
             <button class="mode-button" type="button" data-mode="box" aria-pressed="false">
               <span class="box-icon" aria-hidden="true"></span> 框选
             </button>
+            <button id="undo-prompt" class="mode-button" type="button" disabled>撤销</button>
+            <button id="redo-prompt" class="mode-button" type="button" disabled>重做</button>
             <button id="reset-prompts" class="text-button" type="button">清空</button>
           </div>
           <p id="mode-help" class="tool-help">在目标主体内部点击，放置绿色包含点。</p>
@@ -128,7 +130,11 @@
                 </div>
               </div>
             </div>
-            <button id="segment-button" class="button button--dark" type="button" disabled>生成轮廓</button>
+            <div class="canvas-actions">
+              <button id="toggle-mask-overlay" class="text-button canvas-action" type="button" hidden>隐藏选区</button>
+              <button id="show-original-button" class="text-button canvas-action" type="button" hidden>查看原图</button>
+              <button id="segment-button" class="button button--dark" type="button" disabled>生成轮廓</button>
+            </div>
           </div>
 
           <p id="status" class="status-message" role="status">先选择一张图片。</p>
@@ -180,6 +186,86 @@
               <a id="json-link" href="#" download>轮廓 JSON</a>
             </div>
           </div>
+
+          <section id="editor-section" class="editor-section" hidden aria-labelledby="editor-heading">
+            <div class="result-heading-row">
+              <h3 id="editor-heading">选区编辑</h3>
+              <span class="editor-chip">全分辨率导出</span>
+            </div>
+            <p id="editor-note" class="editor-note">先微调选区，再生成预览。所有编辑都从原图和原始 SAM2 mask 重新合成。</p>
+
+            <div class="editor-group">
+              <div class="editor-group__heading"><strong>修选区</strong><span>在中间画布补画或擦除</span></div>
+              <div class="editor-tool-row" aria-label="选区画笔">
+                <button id="mask-add-button" class="mode-button" type="button" aria-pressed="false">补画选区</button>
+                <button id="mask-erase-button" class="mode-button" type="button" aria-pressed="false">擦除选区</button>
+              </div>
+              <label class="range-control" for="mask-brush-radius">
+                <span>笔刷大小 <output id="mask-brush-radius-value">24 px</output></span>
+                <input id="mask-brush-radius" type="range" min="3" max="100" step="1" value="24">
+              </label>
+              <div class="editor-tool-row">
+                <button id="undo-mask-stroke" class="mode-button" type="button" disabled>撤销笔刷</button>
+                <button id="clear-mask-strokes" class="text-button" type="button" disabled>清除笔刷</button>
+              </div>
+              <label class="range-control" for="edge-offset">
+                <span>边缘 <output id="edge-offset-value">不偏移</output></span>
+                <input id="edge-offset" type="range" min="-20" max="20" step="1" value="0">
+              </label>
+              <label class="range-control" for="feather-px">
+                <span>羽化 <output id="feather-px-value">0 px</output></span>
+                <input id="feather-px" type="range" min="0" max="16" step="1" value="0">
+              </label>
+              <label class="check-control"><input id="mask-cleanup" type="checkbox" checked> 去除细小噪点、填补小孔</label>
+            </div>
+
+            <div class="editor-group">
+              <div class="editor-group__heading"><strong>背景</strong><span>只影响选区以外</span></div>
+              <label class="select-control" for="background-mode"><span>背景效果</span>
+                <select id="background-mode">
+                  <option value="original">保留原背景</option>
+                  <option value="transparent">透明背景</option>
+                  <option value="color">纯色背景</option>
+                  <option value="blur">背景虚化</option>
+                </select>
+              </label>
+              <label id="background-color-row" class="color-control" for="background-color" hidden><span>背景颜色</span><input id="background-color" type="color" value="#ffffff"></label>
+              <label id="background-blur-row" class="range-control" for="background-blur-px" hidden>
+                <span>虚化强度 <output id="background-blur-px-value">18 px</output></span>
+                <input id="background-blur-px" type="range" min="1" max="40" step="1" value="18">
+              </label>
+            </div>
+
+            <div class="editor-group">
+              <div class="editor-group__heading"><strong>局部调整</strong><span>只作用于当前选区</span></div>
+              <label class="range-control" for="subject-brightness">
+                <span>亮度 <output id="subject-brightness-value">0</output></span>
+                <input id="subject-brightness" type="range" min="-60" max="60" step="1" value="0">
+              </label>
+              <label class="range-control" for="subject-saturation">
+                <span>饱和度 <output id="subject-saturation-value">0</output></span>
+                <input id="subject-saturation" type="range" min="-60" max="60" step="1" value="0">
+              </label>
+              <label class="range-control" for="subject-blur-px">
+                <span>局部模糊 <output id="subject-blur-px-value">0 px</output></span>
+                <input id="subject-blur-px" type="range" min="0" max="32" step="1" value="0">
+              </label>
+            </div>
+
+            <div class="editor-actions">
+              <button id="apply-edit" class="button button--primary" type="button" disabled>生成编辑预览</button>
+              <button id="reset-edit" class="button button--secondary" type="button" disabled>恢复默认</button>
+            </div>
+
+            <div id="edit-result" class="edit-result" hidden>
+              <img id="edit-preview" alt="当前局部编辑预览">
+              <p id="edit-summary" class="result-summary"></p>
+              <div class="download-links">
+                <a id="edited-download-link" href="#" download>下载当前编辑 PNG</a>
+                <a id="edited-mask-link" href="#" download>下载修正后 Mask</a>
+              </div>
+            </div>
+          </section>
 
           <div class="runtime-detail">
             <span>当前引擎</span>

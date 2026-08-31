@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AutoSEM：把自然语言、视觉定位和 SAM2 像素级分割串成一个可检查的工作流。">
-    <title>AutoSEM · 从描述到轮廓</title>
+    <meta name="description" content="AutoSEM：把自然语言定位、SAM2 像素级选区和局部图片编辑串成一个可检查的工作流。">
+    <title>AutoSEM · 从描述到编辑</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
   </head>
   <body class="marketing-page">
@@ -28,10 +28,10 @@
       <section class="landing-hero">
         <div class="landing-hero__copy">
           <p class="eyebrow">AUTOMATIC SEMANTIC SEGMENTATION</p>
-          <h1>想要的不是一个框，<br>而是一条准确的边界。</h1>
-          <p class="landing-lead">AutoSEM 把“用语言找到目标”与“用 SAM2 提取边界”拆成两步。自动化足够快，也把选择权留给你。</p>
+          <h1>准确的边界，<br>才是编辑的开始。</h1>
+          <p class="landing-lead">AutoSEM 把“用语言找到目标”“用 SAM2 提取边界”和“按选区局部编辑”串成一条可检查的工作流。</p>
           <div class="hero-actions">
-            <a class="button button--primary button--large" href="/workspace">开始生成轮廓 <span aria-hidden="true">→</span></a>
+            <a class="button button--primary button--large" href="/workspace">开始编辑图片 <span aria-hidden="true">→</span></a>
             <a class="text-link" href="/guide">先看看怎么用 <span aria-hidden="true">↓</span></a>
           </div>
           <p class="hero-note"><span class="hero-note__dot"></span>本地 SAM2 分割 · 可选 Qwen 自动定位</p>
@@ -75,8 +75,8 @@
           <article class="workflow-card">
             <span class="workflow-index">03</span>
             <div class="workflow-icon workflow-icon--export" aria-hidden="true">↓</div>
-            <h3>导出可用结果</h3>
-            <p>拿到 Mask、透明轮廓 PNG 和 JSON，继续用于标注、分析或你的下一个工具。</p>
+            <h3>局部编辑并导出</h3>
+            <p>补画选区、替换背景、局部调色，再导出保持原图尺寸的 PNG。</p>
           </article>
         </div>
       </section>
@@ -85,7 +85,7 @@
         <div class="feature-split__copy">
           <p class="eyebrow">HUMAN IN THE LOOP</p>
           <h2>模型做重活，<br>你保留判断。</h2>
-          <p>全自动生成很方便，但小目标、重叠物体和专业图像常常需要一句更具体的描述或一个额外提示。AutoSEM 让这一点成为流程的一部分，而不是失败后的补救。</p>
+          <p>全自动生成很方便，但小目标、重叠物体和专业图像常常需要一句更具体的描述或一个额外提示。选区出来后，你还可以补画、擦除、收缩或羽化边缘，再决定如何处理背景与主体。</p>
           <a class="text-link" href="/guide">了解提示怎么用 <span aria-hidden="true">→</span></a>
         </div>
         <div class="prompt-demo">
@@ -119,7 +119,7 @@
       <section class="landing-cta">
         <p class="eyebrow">READY WHEN YOU ARE</p>
         <h2>从一张图片开始。</h2>
-        <p>不需要学习一套新工作流。上传、描述、检查边界，然后导出。</p>
+        <p>不需要学习一套新工作流。上传、描述、检查边界、局部编辑，然后导出。</p>
         <a class="button button--primary button--large" href="/workspace">进入工作台 <span aria-hidden="true">→</span></a>
       </section>
     </main>

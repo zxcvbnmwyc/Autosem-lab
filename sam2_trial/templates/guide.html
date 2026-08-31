@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AutoSEM 使用指南：自动定位、点和框提示、结果导出。">
+    <meta name="description" content="AutoSEM 使用指南：自动定位、点和框提示、选区微调与局部图片编辑。">
     <title>使用指南 · AutoSEM</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
   </head>
@@ -22,12 +22,13 @@
         <a href="#start">开始前</a>
         <a href="#auto">自动定位</a>
         <a href="#manual">手动提示</a>
+        <a href="#edit">选区编辑</a>
         <a href="#result">结果与导出</a>
       </aside>
       <article class="document-content">
         <p class="eyebrow">GUIDE</p>
         <h1>把模糊的“想要”，<br>变成清晰的轮廓。</h1>
-        <p class="document-lead">AutoSEM 的核心流程很简单：上传图片 → 给出目标 → 检查提示 → 生成并导出轮廓。自动定位能节省时间，手动提示让你在需要时收紧结果。</p>
+        <p class="document-lead">AutoSEM 的核心流程很简单：上传图片 → 给出目标 → 检查提示 → 生成选区 → 局部编辑并导出。自动定位能节省时间，手动提示让你在需要时收紧结果。</p>
 
         <section id="start">
           <span class="content-step">01</span>
@@ -58,11 +59,23 @@
           <p>对于复杂图像，先用一个框确定范围，再添加 1–2 个包含点；如果把邻近物体一起选进来了，再添加一个排除点。提示应尽量远离边界。</p>
         </section>
 
-        <section id="result">
+        <section id="edit">
           <span class="content-step">04</span>
+          <h2>把选区变成局部编辑</h2>
+          <p>轮廓完成后，工作台会进入选区编辑阶段。你可以在中央画布补画需要保留的区域，或擦掉误选区域；这些笔刷只会在最终导出时作用于服务端保存的原始 SAM2 mask，不会降低图片分辨率。</p>
+          <div class="guide-options">
+            <div><b>边缘与背景</b><p>可收缩或扩展选区、轻微羽化边缘，并保留原背景、换成透明/纯色背景，或只虚化背景。</p></div>
+            <div><b>局部调整</b><p>亮度、饱和度与模糊只会作用于已选主体；每次生成预览都从原图重新合成，因此可以放心重置重来。</p></div>
+          </div>
+        </section>
+
+        <section id="result">
+          <span class="content-step">05</span>
           <h2>结果与导出</h2>
           <p>提交后，任务会显示排队或运行状态。CPU 推理的时间会随图片大小、提示数量和本机配置变化，因此工作台不会承诺固定用时。</p>
           <ul>
+            <li><b>当前编辑 PNG：</b>保留原图尺寸，可导出透明抠图、纯色背景或背景虚化后的版本。</li>
+            <li><b>修正后 Mask：</b>包含补画、擦除与边缘调整后的选区。</li>
             <li><b>Mask PNG：</b>黑白二值掩码，适合继续处理。</li>
             <li><b>透明轮廓 PNG：</b>保留透明背景的轮廓图，便于叠加查看。</li>
             <li><b>轮廓 JSON：</b>轮廓的结构化坐标数据，可用于下游工具。</li>

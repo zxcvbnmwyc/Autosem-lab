@@ -42,6 +42,7 @@ from grounding import (
     QwenGrounder,
     load_local_dotenv,
 )
+from mask_editing import apply_mask_strokes, compose_edit, refine_mask
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -128,7 +129,17 @@ AGENT_MAX_MASK_AREA_RATIO = 0.92
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 IMAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESULT_FILE_NAMES = {"mask.png", "overlay.png", "preview.jpg", "contours.png", "result.json"}
-METRIC_EVENT_KINDS = {"page_view", "upload", "grounding", "agent_run", "segment_job"}
+EDIT_FILE_NAMES = {"preview.png", "edited.png", "mask.png", "edit.json"}
+EDIT_BACKGROUND_MODES = {"original", "transparent", "color", "blur"}
+MAX_EDIT_STROKES = 80
+MAX_EDIT_STROKE_POINTS = 500
+MAX_EDIT_BRUSH_RADIUS = 160
+MAX_EDIT_EDGE_OFFSET = 32
+MAX_EDIT_FEATHER = 32
+MAX_EDIT_BLUR = 64
+MAX_EDITS_PER_RESULT = 12
+HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+METRIC_EVENT_KINDS = {"page_view", "upload", "grounding", "agent_run", "segment_job", "image_edit"}
 _METRICS_SESSION_SALT = (
     os.environ.get("METRICS_SESSION_SALT")
     or os.environ.get("APP_SECRET_KEY")
@@ -1166,6 +1177,101 @@ def _parse_description(value: Any) -> str | None:
     return description or None
 
 
+def _bounded_integer(value: Any, name: str, lower: int, upper: int, default: int) -> int:
+    if value is None:
+        return default
+    number = _number(value, name)
+    if not number.is_integer():
+        raise ValueError(f"{name} 必须是整数。")
+    parsed = int(number)
+    if not lower <= parsed <= upper:
+        raise ValueError(f"{name} 必须在 {lower} 到 {upper} 之间。")
+    return parsed
+
+
+def _object_payload(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} 必须是对象。")
+    return value
+
+
+def _parse_mask_strokes(value: Any, width: int, height: int) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("选区笔刷必须是数组。")
+    if len(value) > MAX_EDIT_STROKES:
+        raise ValueError(f"最多支持 {MAX_EDIT_STROKES} 条选区笔刷。")
+    strokes: list[dict[str, Any]] = []
+    for index, raw_stroke in enumerate(value, start=1):
+        if not isinstance(raw_stroke, dict):
+            raise ValueError(f"第 {index} 条选区笔刷格式不正确。")
+        mode = raw_stroke.get("mode")
+        if mode not in {"add", "erase"}:
+            raise ValueError(f"第 {index} 条选区笔刷只能是 add 或 erase。")
+        radius = _bounded_integer(
+            raw_stroke.get("radius"),
+            f"第 {index} 条选区笔刷半径",
+            1,
+            MAX_EDIT_BRUSH_RADIUS,
+            18,
+        )
+        raw_points = raw_stroke.get("points")
+        if not isinstance(raw_points, list) or not raw_points:
+            raise ValueError(f"第 {index} 条选区笔刷至少需要一个点。")
+        if len(raw_points) > MAX_EDIT_STROKE_POINTS:
+            raise ValueError(f"第 {index} 条选区笔刷最多支持 {MAX_EDIT_STROKE_POINTS} 个点。")
+        points: list[dict[str, float]] = []
+        for point_index, raw_point in enumerate(raw_points, start=1):
+            if not isinstance(raw_point, dict):
+                raise ValueError(f"第 {index} 条选区笔刷的第 {point_index} 个点格式不正确。")
+            points.append(
+                {
+                    "x": _coordinate(raw_point.get("x"), f"第 {index} 条笔刷第 {point_index} 个点的 x", width),
+                    "y": _coordinate(raw_point.get("y"), f"第 {index} 条笔刷第 {point_index} 个点的 y", height),
+                }
+            )
+        strokes.append({"mode": mode, "radius": radius, "points": points})
+    return strokes
+
+
+def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[str, Any]:
+    selection = _object_payload(payload.get("selection"), "selection")
+    background = _object_payload(payload.get("background"), "background")
+    subject = _object_payload(payload.get("subject"), "subject")
+    mode = background.get("mode", "original")
+    if not isinstance(mode, str) or mode not in EDIT_BACKGROUND_MODES:
+        raise ValueError("背景模式只能是 original、transparent、color 或 blur。")
+    color = background.get("color", "#ffffff")
+    if not isinstance(color, str) or not HEX_COLOR_RE.fullmatch(color):
+        raise ValueError("背景颜色必须是 #RRGGBB 格式。")
+    cleanup = selection.get("cleanup", True)
+    if not isinstance(cleanup, bool):
+        raise ValueError("cleanup 必须是布尔值。")
+    return {
+        "strokes": _parse_mask_strokes(selection.get("strokes"), record.width, record.height),
+        "edge_offset": _bounded_integer(
+            selection.get("edge_offset"), "边缘扩展值", -MAX_EDIT_EDGE_OFFSET, MAX_EDIT_EDGE_OFFSET, 0
+        ),
+        "feather_px": _bounded_integer(selection.get("feather_px"), "羽化像素", 0, MAX_EDIT_FEATHER, 0),
+        "cleanup": cleanup,
+        "background_mode": mode,
+        "background_color": color.lower(),
+        "background_blur_px": _bounded_integer(
+            background.get("blur_px"), "背景模糊像素", 1, MAX_EDIT_BLUR, 18
+        ),
+        "subject_brightness": _bounded_integer(subject.get("brightness"), "局部亮度", -80, 80, 0),
+        "subject_saturation": _bounded_integer(subject.get("saturation"), "局部饱和度", -80, 80, 0),
+        "subject_blur_px": _bounded_integer(subject.get("blur_px"), "局部模糊像素", 0, MAX_EDIT_BLUR, 0),
+    }
+
+
+def _rgb_color(value: str) -> tuple[int, int, int]:
+    return tuple(int(value[offset : offset + 2], 16) for offset in (1, 3, 5))  # type: ignore[return-value]
+
+
 def _load_rgb(record: ImageRecord) -> np.ndarray:
     with Image.open(record.path) as opened:
         return np.array(opened.convert("RGB"), copy=True)
@@ -1205,6 +1311,104 @@ def _render_transparent_contours(mask: np.ndarray, contours: list[np.ndarray] | 
     rendered = np.zeros((height, width, 4), dtype=np.uint8)
     cv2.drawContours(rendered, contours if contours is not None else _drawing_contours(mask), -1, (255, 220, 0, 255), 2, cv2.LINE_AA)
     return rendered
+
+
+def _require_owned_result(result_id: Any, record: ImageRecord) -> Path:
+    if not isinstance(result_id, str) or not IMAGE_ID_RE.fullmatch(result_id):
+        abort(404)
+    result_dir = RESULTS_DIR / result_id
+    access = _json_read(result_dir / "access.json")
+    result = _json_read(result_dir / "result.json")
+    image = result.get("image") if isinstance(result, dict) else None
+    if (
+        not result_dir.is_dir()
+        or access is None
+        or access.get("owner_id") != record.owner_id
+        or _safe_iso_before_now(access.get("expires_at") if isinstance(access.get("expires_at"), str) else None)
+        or not isinstance(image, dict)
+        or image.get("id") != record.image_id
+        or not (result_dir / "mask.png").is_file()
+    ):
+        abort(404)
+    return result_dir
+
+
+def _load_result_mask(result_dir: Path, record: ImageRecord) -> np.ndarray:
+    try:
+        with Image.open(result_dir / "mask.png") as opened:
+            mask = np.array(opened.convert("L"), copy=True) > 0
+    except (OSError, UnidentifiedImageError):
+        raise ValueError("原始选区文件不可用，请重新生成轮廓。") from None
+    if mask.shape != (record.height, record.width):
+        raise ValueError("原始选区尺寸与图片不一致，请重新生成轮廓。")
+    return mask
+
+
+def _prune_result_edits(edits_dir: Path) -> None:
+    """Bound derived files for one result without touching user uploads."""
+    try:
+        candidates = sorted(
+            (path for path in edits_dir.iterdir() if path.is_dir() and IMAGE_ID_RE.fullmatch(path.name)),
+            key=lambda path: path.stat().st_mtime,
+        )
+    except OSError:
+        return
+    for stale in candidates[:-MAX_EDITS_PER_RESULT]:
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def _write_edit_artifacts(
+    result_dir: Path,
+    record: ImageRecord,
+    settings: dict[str, Any],
+    mask: np.ndarray,
+    rendered: np.ndarray,
+) -> dict[str, Any]:
+    edit_id = uuid.uuid4().hex
+    edits_dir = result_dir / "edits"
+    final_dir = edits_dir / edit_id
+    temporary_dir = edits_dir / f".{edit_id}.tmp"
+    edits_dir.mkdir(parents=True, exist_ok=True)
+    temporary_dir.mkdir(parents=False, exist_ok=False)
+    try:
+        mode = "RGBA" if rendered.ndim == 3 and rendered.shape[2] == 4 else "RGB"
+        output = Image.fromarray(rendered, mode=mode)
+        output.save(temporary_dir / "edited.png", format="PNG", compress_level=3)
+        preview = _preview_image(output, RESULT_PREVIEW_MAX_EDGE)
+        preview.save(temporary_dir / "preview.png", format="PNG", compress_level=3)
+        Image.fromarray(mask.astype(np.uint8) * 255, mode="L").save(
+            temporary_dir / "mask.png", format="PNG", compress_level=3
+        )
+        (temporary_dir / "edit.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "edit_id": edit_id,
+                    "result_id": result_dir.name,
+                    "image_id": record.image_id,
+                    "created_at": _utc_now(),
+                    "settings": settings,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary_dir.replace(final_dir)
+    except Exception:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+        raise
+    _prune_result_edits(edits_dir)
+    return {
+        "edit_id": edit_id,
+        "result_id": result_dir.name,
+        "image_id": record.image_id,
+        "preview_url": f"/media/edits/{result_dir.name}/{edit_id}/preview.png",
+        "download_url": f"/media/edits/{result_dir.name}/{edit_id}/edited.png",
+        "mask_url": f"/media/edits/{result_dir.name}/{edit_id}/mask.png",
+        "recipe_url": f"/media/edits/{result_dir.name}/{edit_id}/edit.json",
+        "settings": settings,
+    }
 
 
 def _grounding_representative_point(
@@ -2107,6 +2311,42 @@ def job_status(job_id: str) -> Any:
     return jsonify(job.as_public(job_manager.queue_depth))
 
 
+@app.post("/api/edits")
+def create_edit() -> Any:
+    """Render a non-destructive, full-resolution edit from one owned SAM2 result."""
+    started_at = time.perf_counter()
+    owner_id = _current_owner()
+    limited = _limit_or_error(owner_id, "image_edit", 36, 60 * 60)
+    if limited is not None:
+        return limited
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error("请提交 JSON 请求。", 400)
+    try:
+        record = _require_record(payload.get("image_id"))
+        result_dir = _require_owned_result(payload.get("result_id"), record)
+        settings = _parse_edit_settings(payload, record)
+        mask = _load_result_mask(result_dir, record)
+        mask = apply_mask_strokes(mask, settings["strokes"])
+        mask = refine_mask(mask, edge_offset=settings["edge_offset"], cleanup=settings["cleanup"])
+        rendered = compose_edit(
+            _load_rgb(record),
+            mask,
+            background_mode=settings["background_mode"],
+            background_color=_rgb_color(settings["background_color"]),
+            background_blur_px=settings["background_blur_px"],
+            subject_brightness=settings["subject_brightness"],
+            subject_saturation=settings["subject_saturation"],
+            subject_blur_px=settings["subject_blur_px"],
+            feather_px=settings["feather_px"],
+        )
+        public = _write_edit_artifacts(result_dir, record, settings, mask, rendered)
+    except ValueError as error:
+        return _json_error(str(error), 400)
+    _record_metric("image_edit", owner_id=owner_id, duration_ms=(time.perf_counter() - started_at) * 1000)
+    return jsonify(public), 201
+
+
 @app.get("/media/results/<result_id>/<artifact>")
 def result_artifact(result_id: str, artifact: str) -> Any:
     if not IMAGE_ID_RE.fullmatch(result_id) or artifact not in RESULT_FILE_NAMES:
@@ -2121,6 +2361,27 @@ def result_artifact(result_id: str, artifact: str) -> Any:
     ):
         abort(404)
     return _send_owned_media(result_dir, artifact, as_attachment=artifact == "result.json")
+
+
+@app.get("/media/edits/<result_id>/<edit_id>/<artifact>")
+def edit_artifact(result_id: str, edit_id: str, artifact: str) -> Any:
+    if (
+        not IMAGE_ID_RE.fullmatch(result_id)
+        or not IMAGE_ID_RE.fullmatch(edit_id)
+        or artifact not in EDIT_FILE_NAMES
+    ):
+        abort(404)
+    result_dir = RESULTS_DIR / result_id
+    access = _json_read(result_dir / "access.json")
+    edit_dir = result_dir / "edits" / edit_id
+    if (
+        not edit_dir.is_dir()
+        or access is None
+        or access.get("owner_id") != _current_owner()
+        or _safe_iso_before_now(access.get("expires_at") if isinstance(access.get("expires_at"), str) else None)
+    ):
+        abort(404)
+    return _send_owned_media(edit_dir, artifact, as_attachment=artifact in {"edited.png", "mask.png", "edit.json"})
 
 
 def main() -> None:

@@ -37,6 +37,46 @@
   const jobMessage = document.getElementById("job-message");
   const jobProgressBar = document.getElementById("job-progress-bar");
   const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
+  const undoPromptButton = document.getElementById("undo-prompt");
+  const redoPromptButton = document.getElementById("redo-prompt");
+  const toggleMaskOverlayButton = document.getElementById("toggle-mask-overlay");
+  const showOriginalButton = document.getElementById("show-original-button");
+  const editorSection = document.getElementById("editor-section");
+  const editorNote = document.getElementById("editor-note");
+  const maskAddButton = document.getElementById("mask-add-button");
+  const maskEraseButton = document.getElementById("mask-erase-button");
+  const maskBrushRadius = document.getElementById("mask-brush-radius");
+  const maskBrushRadiusValue = document.getElementById("mask-brush-radius-value");
+  const undoMaskStrokeButton = document.getElementById("undo-mask-stroke");
+  const clearMaskStrokesButton = document.getElementById("clear-mask-strokes");
+  const edgeOffset = document.getElementById("edge-offset");
+  const edgeOffsetValue = document.getElementById("edge-offset-value");
+  const featherPx = document.getElementById("feather-px");
+  const featherPxValue = document.getElementById("feather-px-value");
+  const maskCleanup = document.getElementById("mask-cleanup");
+  const backgroundMode = document.getElementById("background-mode");
+  const backgroundColorRow = document.getElementById("background-color-row");
+  const backgroundColor = document.getElementById("background-color");
+  const backgroundBlurRow = document.getElementById("background-blur-row");
+  const backgroundBlurPx = document.getElementById("background-blur-px");
+  const backgroundBlurPxValue = document.getElementById("background-blur-px-value");
+  const subjectBrightness = document.getElementById("subject-brightness");
+  const subjectBrightnessValue = document.getElementById("subject-brightness-value");
+  const subjectSaturation = document.getElementById("subject-saturation");
+  const subjectSaturationValue = document.getElementById("subject-saturation-value");
+  const subjectBlurPx = document.getElementById("subject-blur-px");
+  const subjectBlurPxValue = document.getElementById("subject-blur-px-value");
+  const applyEditButton = document.getElementById("apply-edit");
+  const resetEditButton = document.getElementById("reset-edit");
+  const editResult = document.getElementById("edit-result");
+  const editPreview = document.getElementById("edit-preview");
+  const editSummary = document.getElementById("edit-summary");
+  const editedDownloadLink = document.getElementById("edited-download-link");
+  const editedMaskLink = document.getElementById("edited-mask-link");
+  const editorInputs = [
+    maskBrushRadius, edgeOffset, featherPx, maskCleanup, backgroundMode, backgroundColor,
+    backgroundBlurPx, subjectBrightness, subjectSaturation, subjectBlurPx,
+  ].filter(Boolean);
 
   if (!fileInput || !description || !canvas || !context || !agentPanel || !agentTitle || !agentStage || !agentMessage || !agentActions) {
     return;
@@ -47,6 +87,8 @@
   const maxCanvasEdge = 1600;
   const state = {
     image: null,
+    baseImage: null,
+    editImage: null,
     imageId: null,
     width: 0,
     height: 0,
@@ -55,6 +97,17 @@
     draftBox: null,
     boxDragStart: null,
     boxSource: null,
+    promptUndo: [],
+    promptRedo: [],
+    resultId: null,
+    selectionDirty: false,
+    maskSource: null,
+    maskOverlay: null,
+    maskOverlayVisible: true,
+    maskOverlayToken: 0,
+    maskStrokes: [],
+    activeMaskStroke: null,
+    showingEdit: false,
     groundingId: null,
     groundingCandidates: [],
     selectedCandidateIndex: null,
@@ -144,6 +197,51 @@
     segmentButton.disabled = state.busy || !state.imageId || !hasManualPrompt;
     groundButton.disabled = state.busy || !state.imageId || !state.groundingAvailable || !hasDescription;
     runButton.disabled = state.busy || !state.imageId || !hasDescription;
+    if (undoPromptButton) {
+      undoPromptButton.disabled = state.busy || !state.promptUndo.length;
+    }
+    if (redoPromptButton) {
+      redoPromptButton.disabled = state.busy || !state.promptRedo.length;
+    }
+    refreshEditorControls();
+  }
+
+  function editorAvailable() {
+    return Boolean(state.imageId && state.resultId && !state.selectionDirty);
+  }
+
+  function refreshEditorControls() {
+    const available = editorAvailable();
+    const disabled = state.busy || !available;
+    if (applyEditButton) {
+      applyEditButton.disabled = disabled;
+    }
+    if (resetEditButton) {
+      resetEditButton.disabled = state.busy || !state.resultId;
+    }
+    editorInputs.forEach((input) => {
+      input.disabled = disabled;
+    });
+    [maskAddButton, maskEraseButton, undoMaskStrokeButton, clearMaskStrokesButton].forEach((button) => {
+      if (button) {
+        button.disabled = disabled || !state.maskSource || (button === undoMaskStrokeButton && !state.maskStrokes.length) || (button === clearMaskStrokesButton && !state.maskStrokes.length);
+      }
+    });
+    if (toggleMaskOverlayButton) {
+      toggleMaskOverlayButton.hidden = !state.maskOverlay;
+      toggleMaskOverlayButton.disabled = state.busy || !state.maskOverlay;
+      toggleMaskOverlayButton.textContent = state.maskOverlayVisible ? "隐藏选区" : "显示选区";
+    }
+    if (showOriginalButton) {
+      showOriginalButton.hidden = !state.editImage;
+      showOriginalButton.disabled = state.busy || !state.editImage;
+      showOriginalButton.textContent = state.showingEdit ? "查看原图" : "返回编辑预览";
+    }
+    if (editorNote && state.resultId) {
+      editorNote.textContent = state.selectionDirty
+        ? "提示已经改动。请先点击“更新选区”，再继续局部编辑。"
+        : "先微调选区，再生成预览。所有编辑都从原图和原始 SAM2 mask 重新合成。";
+    }
   }
 
   function setBusy(isBusy, action) {
@@ -159,7 +257,14 @@
       ? "<span aria-hidden=\"true\">⋯</span> Agent 正在分析"
       : "<span aria-hidden=\"true\">✦</span> 启动分割 Agent";
     groundButton.textContent = isBusy && action === "ground" ? "Qwen 正在定位…" : "只查看 Qwen 候选";
-    segmentButton.textContent = isBusy && action === "segment" ? "任务进行中…" : "生成轮廓";
+    segmentButton.textContent = isBusy && action === "segment"
+      ? "任务进行中…"
+      : state.selectionDirty ? "更新选区" : "生成轮廓";
+    if (applyEditButton) {
+      applyEditButton.innerHTML = isBusy && action === "edit"
+        ? "<span aria-hidden=\"true\">⋯</span> 正在合成"
+        : "生成编辑预览";
+    }
 
     refreshActions();
     renderCandidateChoices();
@@ -221,6 +326,136 @@
     context.restore();
   }
 
+  function drawMaskOverlay() {
+    if (!state.maskOverlay || !state.maskOverlayVisible) {
+      return;
+    }
+    context.save();
+    context.globalAlpha = 0.42;
+    context.drawImage(state.maskOverlay, 0, 0, canvas.width, canvas.height);
+    context.restore();
+  }
+
+  function createMaskLayer(image) {
+    const layer = document.createElement("canvas");
+    layer.width = canvas.width;
+    layer.height = canvas.height;
+    const layerContext = layer.getContext("2d", { willReadFrequently: true });
+    if (!layerContext) {
+      return null;
+    }
+    layerContext.drawImage(image, 0, 0, layer.width, layer.height);
+    const pixels = layerContext.getImageData(0, 0, layer.width, layer.height);
+    for (let index = 0; index < pixels.data.length; index += 4) {
+      const alpha = pixels.data[index];
+      pixels.data[index] = 43;
+      pixels.data[index + 1] = 166;
+      pixels.data[index + 2] = 111;
+      pixels.data[index + 3] = alpha;
+    }
+    layerContext.putImageData(pixels, 0, 0);
+    return layer;
+  }
+
+  function cloneMaskLayer(layer) {
+    const copy = document.createElement("canvas");
+    copy.width = layer.width;
+    copy.height = layer.height;
+    const copyContext = copy.getContext("2d");
+    if (copyContext) {
+      copyContext.drawImage(layer, 0, 0);
+    }
+    return copy;
+  }
+
+  function drawMaskStrokeOnLayer(layer, stroke) {
+    const layerContext = layer && layer.getContext("2d");
+    if (!layerContext || !stroke || !Array.isArray(stroke.points) || !stroke.points.length) {
+      return;
+    }
+    const scale = canvas.width / Math.max(state.width, 1);
+    const radius = Math.max(1, Number(stroke.radius) * scale);
+    const points = stroke.points.map(toCanvasPoint);
+    layerContext.save();
+    layerContext.globalCompositeOperation = stroke.mode === "erase" ? "destination-out" : "source-over";
+    layerContext.strokeStyle = "#2ba66f";
+    layerContext.fillStyle = "#2ba66f";
+    layerContext.lineWidth = Math.max(1, radius * 2);
+    layerContext.lineCap = "round";
+    layerContext.lineJoin = "round";
+    layerContext.beginPath();
+    layerContext.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index += 1) {
+      layerContext.lineTo(points[index].x, points[index].y);
+    }
+    layerContext.stroke();
+    layerContext.beginPath();
+    layerContext.arc(points[0].x, points[0].y, radius, 0, Math.PI * 2);
+    layerContext.fill();
+    if (points.length > 1) {
+      const last = points[points.length - 1];
+      layerContext.beginPath();
+      layerContext.arc(last.x, last.y, radius, 0, Math.PI * 2);
+      layerContext.fill();
+    }
+    layerContext.restore();
+  }
+
+  function rebuildMaskOverlay() {
+    if (!state.maskSource) {
+      state.maskOverlay = null;
+      return;
+    }
+    const layer = cloneMaskLayer(state.maskSource);
+    state.maskStrokes.forEach((stroke) => drawMaskStrokeOnLayer(layer, stroke));
+    if (state.activeMaskStroke) {
+      drawMaskStrokeOnLayer(layer, state.activeMaskStroke);
+    }
+    state.maskOverlay = layer;
+  }
+
+  function clearMaskOverlay() {
+    state.maskOverlayToken += 1;
+    state.maskSource = null;
+    state.maskOverlay = null;
+    state.maskStrokes = [];
+    state.activeMaskStroke = null;
+  }
+
+  function loadMaskOverlay(url, options) {
+    if (typeof url !== "string" || !url) {
+      clearMaskOverlay();
+      redraw();
+      refreshActions();
+      return;
+    }
+    const settings = options || {};
+    const token = ++state.maskOverlayToken;
+    const image = new Image();
+    image.onload = () => {
+      if (token !== state.maskOverlayToken) {
+        return;
+      }
+      const layer = createMaskLayer(image);
+      if (!layer) {
+        return;
+      }
+      state.maskSource = layer;
+      if (settings.resetStrokes) {
+        state.maskStrokes = [];
+      }
+      rebuildMaskOverlay();
+      redraw();
+      refreshActions();
+    };
+    image.onerror = () => {
+      if (token === state.maskOverlayToken) {
+        setStatus("选区文件暂时无法加载，但仍可下载原始结果。", "error");
+      }
+    };
+    image.src = url;
+  }
+
   function drawAgentCandidateBoxes() {
     if (state.agentPhase !== "needs_choice") {
       return;
@@ -260,6 +495,7 @@
     }
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(state.image, 0, 0, canvas.width, canvas.height);
+    drawMaskOverlay();
     drawAgentCandidateBoxes();
     drawBox(state.box, false);
     drawBox(state.draftBox, true);
@@ -284,6 +520,173 @@
       x1: Math.max(start.x, end.x),
       y1: Math.max(start.y, end.y),
     };
+  }
+
+  function promptSnapshot() {
+    return {
+      points: state.points.map((point) => ({ x: point.x, y: point.y, label: point.label })),
+      box: state.box ? { x0: state.box.x0, y0: state.box.y0, x1: state.box.x1, y1: state.box.y1 } : null,
+      boxSource: state.boxSource,
+    };
+  }
+
+  function rememberPromptSnapshot() {
+    state.promptUndo.push(promptSnapshot());
+    if (state.promptUndo.length > 40) {
+      state.promptUndo.shift();
+    }
+    state.promptRedo = [];
+  }
+
+  function restorePromptSnapshot(snapshot) {
+    state.points = Array.isArray(snapshot.points)
+      ? snapshot.points.map((point) => ({ x: point.x, y: point.y, label: point.label }))
+      : [];
+    state.box = snapshot.box ? { x0: snapshot.box.x0, y0: snapshot.box.y0, x1: snapshot.box.x1, y1: snapshot.box.y1 } : null;
+    state.boxSource = snapshot.boxSource || null;
+    state.draftBox = null;
+    state.boxDragStart = null;
+    clearGrounding();
+    clearAgentState();
+  }
+
+  function markSelectionDirty() {
+    if (!state.resultId) {
+      return;
+    }
+    state.selectionDirty = true;
+    state.editImage = null;
+    if (state.showingEdit && state.baseImage) {
+      state.showingEdit = false;
+      displayCanvasImage(state.baseImage, state.width, state.height, { asBase: false });
+    } else {
+      state.showingEdit = false;
+    }
+    if (editResult) {
+      editResult.hidden = true;
+    }
+  }
+
+  function undoPrompt() {
+    if (!state.promptUndo.length || state.busy) {
+      return;
+    }
+    state.promptRedo.push(promptSnapshot());
+    restorePromptSnapshot(state.promptUndo.pop());
+    markSelectionDirty();
+    redraw();
+    refreshActions();
+    setStatus("已撤销上一步提示。更新选区后即可继续编辑。", "");
+  }
+
+  function redoPrompt() {
+    if (!state.promptRedo.length || state.busy) {
+      return;
+    }
+    state.promptUndo.push(promptSnapshot());
+    restorePromptSnapshot(state.promptRedo.pop());
+    markSelectionDirty();
+    redraw();
+    refreshActions();
+    setStatus("已恢复提示。更新选区后即可继续编辑。", "");
+  }
+
+  function setMaskTool(mode) {
+    if (!editorAvailable()) {
+      return;
+    }
+    state.mode = mode;
+    modeButtons.forEach((button) => {
+      button.classList.remove("selected");
+      button.setAttribute("aria-pressed", "false");
+    });
+    if (maskAddButton) {
+      const selected = mode === "mask-add";
+      maskAddButton.classList.toggle("selected", selected);
+      maskAddButton.setAttribute("aria-pressed", String(selected));
+    }
+    if (maskEraseButton) {
+      const selected = mode === "mask-erase";
+      maskEraseButton.classList.toggle("selected", selected);
+      maskEraseButton.setAttribute("aria-pressed", String(selected));
+    }
+    modeHelp.textContent = mode === "mask-add"
+      ? "在画布上拖动，补进应属于选区的区域。"
+      : "在画布上拖动，擦除不应属于选区的区域。";
+    canvas.style.cursor = "crosshair";
+  }
+
+  function resetMaskToolButtons() {
+    [maskAddButton, maskEraseButton].forEach((button) => {
+      if (button) {
+        button.classList.remove("selected");
+        button.setAttribute("aria-pressed", "false");
+      }
+    });
+  }
+
+  function beginMaskStroke(point, pointerId) {
+    const radius = Math.max(1, Number(maskBrushRadius && maskBrushRadius.value) || 24);
+    state.activeMaskStroke = {
+      mode: state.mode === "mask-erase" ? "erase" : "add",
+      radius,
+      points: [point],
+    };
+    canvas.setPointerCapture(pointerId);
+    rebuildMaskOverlay();
+    redraw();
+  }
+
+  function extendMaskStroke(point) {
+    if (!state.activeMaskStroke) {
+      return;
+    }
+    const points = state.activeMaskStroke.points;
+    const previous = points[points.length - 1];
+    if (Math.hypot(point.x - previous.x, point.y - previous.y) < 0.75) {
+      return;
+    }
+    points.push(point);
+    rebuildMaskOverlay();
+    scheduleRedraw();
+  }
+
+  function completeMaskStroke(pointerId) {
+    if (!state.activeMaskStroke) {
+      return false;
+    }
+    state.maskStrokes.push(state.activeMaskStroke);
+    state.activeMaskStroke = null;
+    if (canvas.hasPointerCapture(pointerId)) {
+      canvas.releasePointerCapture(pointerId);
+    }
+    rebuildMaskOverlay();
+    redraw();
+    refreshActions();
+    setStatus("选区笔刷已记录。点击“生成编辑预览”即可按原图尺寸导出。", "success");
+    return true;
+  }
+
+  function undoMaskStroke() {
+    if (!state.maskStrokes.length || state.busy) {
+      return;
+    }
+    state.maskStrokes.pop();
+    rebuildMaskOverlay();
+    redraw();
+    refreshActions();
+    setStatus("已撤销最后一笔选区修正。", "");
+  }
+
+  function clearMaskStrokes() {
+    if (!state.maskStrokes.length || state.busy) {
+      return;
+    }
+    state.maskStrokes = [];
+    rebuildMaskOverlay();
+    redraw();
+    refreshActions();
+    setStatus("手动选区笔刷已清除。", "");
   }
 
   function clearAgentState() {
@@ -421,11 +824,15 @@
       setStatus("Qwen 返回的候选框无效，请重新定位或手动框选。", "error");
       return false;
     }
+    const changed = !state.box || state.box.x0 !== box.x0 || state.box.y0 !== box.y0 || state.box.x1 !== box.x1 || state.box.y1 !== box.y1 || state.boxSource !== "qwen";
     state.box = box;
     state.boxSource = "qwen";
     state.draftBox = null;
     state.boxDragStart = null;
     state.selectedCandidateIndex = index;
+    if (changed) {
+      markSelectionDirty();
+    }
     redraw();
     renderCandidateChoices();
     refreshActions();
@@ -484,6 +891,10 @@
 
   function resetPrompts(options) {
     const settings = options || {};
+    const hadPrompts = state.points.length || state.box;
+    if (!settings.skipHistory && hadPrompts) {
+      rememberPromptSnapshot();
+    }
     state.points = [];
     state.box = null;
     state.draftBox = null;
@@ -492,6 +903,12 @@
     clearGrounding();
     if (!settings.keepAgent) {
       clearAgentState();
+    }
+    if (settings.resetHistory) {
+      state.promptUndo = [];
+      state.promptRedo = [];
+    } else if (hadPrompts) {
+      markSelectionDirty();
     }
     redraw();
     refreshActions();
@@ -502,6 +919,7 @@
 
   function setMode(mode) {
     state.mode = mode;
+    resetMaskToolButtons();
     modeButtons.forEach((button) => {
       const selected = button.dataset.mode === mode;
       button.classList.toggle("selected", selected);
@@ -549,10 +967,16 @@
     }
   }
 
-  function displayCanvasImage(image, sourceWidth, sourceHeight) {
+  function displayCanvasImage(image, sourceWidth, sourceHeight, options) {
+    const settings = options || {};
     const width = Math.max(2, Math.round(sourceWidth || image.naturalWidth));
     const height = Math.max(2, Math.round(sourceHeight || image.naturalHeight));
     const scale = Math.min(1, maxCanvasEdge / Math.max(width, height));
+    if (settings.asBase !== false) {
+      state.baseImage = image;
+      state.editImage = null;
+      state.showingEdit = false;
+    }
     state.image = image;
     state.width = width;
     state.height = height;
@@ -562,6 +986,7 @@
     canvas.hidden = false;
     canvasShell.classList.add("canvas-shell--has-image");
     redraw();
+    refreshActions();
   }
 
   function beginLocalPreview(file, token) {
@@ -605,17 +1030,29 @@
 
   async function uploadImage(file) {
     resultSection.hidden = true;
+    if (editorSection) {
+      editorSection.hidden = true;
+    }
+    if (editResult) {
+      editResult.hidden = true;
+    }
     resetJobPoll();
     state.activeJobId = null;
     state.pollUrl = null;
     state.imageId = null;
     state.image = null;
+    state.baseImage = null;
+    state.editImage = null;
     state.width = 0;
     state.height = 0;
+    state.resultId = null;
+    state.selectionDirty = false;
+    state.showingEdit = false;
+    clearMaskOverlay();
     state.previewToken += 1;
     const previewToken = state.previewToken;
     safeSessionRemove(activeJobStorageKey);
-    resetPrompts({ quiet: true });
+    resetPrompts({ quiet: true, skipHistory: true, resetHistory: true });
     fileName.textContent = file.name;
     const form = new FormData();
     form.append("image", file);
@@ -960,6 +1397,9 @@
     if (typeof previewUrl !== "string" || !previewUrl) {
       throw new Error("任务已经完成，但没有找到预览文件。请刷新后重试。 ");
     }
+    if (typeof result.result_id !== "string" || !result.result_id) {
+      throw new Error("任务已经完成，但没有找到可编辑的选区编号。请重新生成轮廓。 ");
+    }
     resultPreview.src = previewUrl;
     const area = num(result.mask_area_px);
     const iou = num(result.estimated_iou);
@@ -979,6 +1419,195 @@
       link.setAttribute("aria-disabled", String(link.href.endsWith("/#")));
     });
     resultSection.hidden = false;
+    state.resultId = result.result_id;
+    state.selectionDirty = false;
+    state.editImage = null;
+    state.showingEdit = false;
+    resetEditControls({ restoreCanvas: true });
+    if (editorSection) {
+      editorSection.hidden = false;
+    }
+    loadMaskOverlay(typeof result.mask_url === "string" ? result.mask_url : null, { resetStrokes: true });
+    refreshActions();
+  }
+
+  function editNumber(input, fallback) {
+    const value = input ? num(input.value) : null;
+    return value === null ? fallback : Math.round(value);
+  }
+
+  function signedValue(value) {
+    return value > 0 ? "+" + String(value) : String(value);
+  }
+
+  function syncEditControls() {
+    const brush = editNumber(maskBrushRadius, 24);
+    const edge = editNumber(edgeOffset, 0);
+    const feather = editNumber(featherPx, 0);
+    const backgroundBlur = editNumber(backgroundBlurPx, 18);
+    const brightness = editNumber(subjectBrightness, 0);
+    const saturation = editNumber(subjectSaturation, 0);
+    const subjectBlur = editNumber(subjectBlurPx, 0);
+    if (maskBrushRadiusValue) maskBrushRadiusValue.textContent = String(brush) + " px";
+    if (edgeOffsetValue) edgeOffsetValue.textContent = edge === 0 ? "不偏移" : edge > 0 ? "扩展 +" + String(edge) + " px" : "收缩 " + String(Math.abs(edge)) + " px";
+    if (featherPxValue) featherPxValue.textContent = String(feather) + " px";
+    if (backgroundBlurPxValue) backgroundBlurPxValue.textContent = String(backgroundBlur) + " px";
+    if (subjectBrightnessValue) subjectBrightnessValue.textContent = signedValue(brightness);
+    if (subjectSaturationValue) subjectSaturationValue.textContent = signedValue(saturation);
+    if (subjectBlurPxValue) subjectBlurPxValue.textContent = String(subjectBlur) + " px";
+    const mode = backgroundMode ? backgroundMode.value : "original";
+    if (backgroundColorRow) backgroundColorRow.hidden = mode !== "color";
+    if (backgroundBlurRow) backgroundBlurRow.hidden = mode !== "blur";
+  }
+
+  function resetEditControls(options) {
+    const settings = options || {};
+    if (maskBrushRadius) maskBrushRadius.value = "24";
+    if (edgeOffset) edgeOffset.value = "0";
+    if (featherPx) featherPx.value = "0";
+    if (maskCleanup) maskCleanup.checked = true;
+    if (backgroundMode) backgroundMode.value = "original";
+    if (backgroundColor) backgroundColor.value = "#ffffff";
+    if (backgroundBlurPx) backgroundBlurPx.value = "18";
+    if (subjectBrightness) subjectBrightness.value = "0";
+    if (subjectSaturation) subjectSaturation.value = "0";
+    if (subjectBlurPx) subjectBlurPx.value = "0";
+    state.maskStrokes = [];
+    state.activeMaskStroke = null;
+    state.maskOverlayVisible = true;
+    state.editImage = null;
+    state.showingEdit = false;
+    if (editResult) editResult.hidden = true;
+    if (settings.restoreCanvas && state.baseImage) {
+      displayCanvasImage(state.baseImage, state.width, state.height, { asBase: false });
+    }
+    if (state.mode === "mask-add" || state.mode === "mask-erase") {
+      setMode("positive");
+    } else {
+      resetMaskToolButtons();
+    }
+    rebuildMaskOverlay();
+    redraw();
+    syncEditControls();
+    refreshActions();
+  }
+
+  function buildEditPayload() {
+    return {
+      image_id: state.imageId,
+      result_id: state.resultId,
+      selection: {
+        strokes: state.maskStrokes.map((stroke) => ({
+          mode: stroke.mode,
+          radius: Math.round(Number(stroke.radius) || 24),
+          points: stroke.points.map((point) => ({ x: point.x, y: point.y })),
+        })),
+        edge_offset: editNumber(edgeOffset, 0),
+        feather_px: editNumber(featherPx, 0),
+        cleanup: Boolean(maskCleanup && maskCleanup.checked),
+      },
+      background: {
+        mode: backgroundMode ? backgroundMode.value : "original",
+        color: backgroundColor ? backgroundColor.value : "#ffffff",
+        blur_px: editNumber(backgroundBlurPx, 18),
+      },
+      subject: {
+        brightness: editNumber(subjectBrightness, 0),
+        saturation: editNumber(subjectSaturation, 0),
+        blur_px: editNumber(subjectBlurPx, 0),
+      },
+    };
+  }
+
+  function editSummaryText(settings) {
+    const pieces = [];
+    const mode = settings && settings.background_mode;
+    const backgroundCopy = { original: "保留原背景", transparent: "透明背景", color: "纯色背景", blur: "背景虚化" };
+    pieces.push(backgroundCopy[mode] || "局部编辑");
+    if (settings && Array.isArray(settings.strokes) && settings.strokes.length) {
+      pieces.push(String(settings.strokes.length) + " 条选区笔刷");
+    }
+    if (settings && settings.edge_offset) {
+      pieces.push(settings.edge_offset > 0 ? "边缘扩展" : "边缘收缩");
+    }
+    if (settings && settings.feather_px) {
+      pieces.push("羽化 " + String(settings.feather_px) + " px");
+    }
+    if (settings && settings.subject_brightness) {
+      pieces.push("亮度 " + signedValue(settings.subject_brightness));
+    }
+    if (settings && settings.subject_saturation) {
+      pieces.push("饱和度 " + signedValue(settings.subject_saturation));
+    }
+    return pieces.join("；") + "。";
+  }
+
+  function displayEditOnCanvas(url) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        state.editImage = image;
+        state.showingEdit = true;
+        displayCanvasImage(image, state.width, state.height, { asBase: false });
+        resolve();
+      };
+      image.onerror = () => reject(new Error("编辑图片已经生成，但浏览器未能显示预览。"));
+      image.src = url;
+    });
+  }
+
+  async function displayEditResult(result) {
+    if (!result || typeof result.preview_url !== "string" || typeof result.download_url !== "string") {
+      throw new Error("编辑任务没有返回完整结果，请重新试一次。 ");
+    }
+    editPreview.src = result.preview_url;
+    editedDownloadLink.href = result.download_url;
+    editedMaskLink.href = typeof result.mask_url === "string" ? result.mask_url : "#";
+    [editedDownloadLink, editedMaskLink].forEach((link) => {
+      link.classList.toggle("is-disabled", link.href.endsWith("/#"));
+      link.setAttribute("aria-disabled", String(link.href.endsWith("/#")));
+    });
+    editSummary.textContent = editSummaryText(result.settings);
+    editResult.hidden = false;
+    await displayEditOnCanvas(result.preview_url);
+    refreshActions();
+  }
+
+  async function applyEdit() {
+    if (!editorAvailable()) {
+      setStatus("请先完成或更新选区，再开始局部编辑。", "error");
+      return;
+    }
+    setBusy(true, "edit");
+    setStatus("正在按原图尺寸合成编辑预览…", "working");
+    try {
+      const response = await fetch("/api/edits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildEditPayload()),
+      });
+      const result = await readResponse(response);
+      await displayEditResult(result);
+      setBusy(false);
+      setStatus("编辑预览已生成；下载按钮会导出原图尺寸 PNG。", "success");
+    } catch (error) {
+      setBusy(false);
+      setStatus(error.message, "error");
+    }
+  }
+
+  function toggleOriginalCanvas() {
+    if (!state.editImage || !state.baseImage) {
+      return;
+    }
+    if (state.showingEdit) {
+      state.showingEdit = false;
+      displayCanvasImage(state.baseImage, state.width, state.height, { asBase: false });
+    } else {
+      state.showingEdit = true;
+      displayCanvasImage(state.editImage, state.width, state.height, { asBase: false });
+    }
+    refreshActions();
   }
 
   function finishJobWithError(message) {
@@ -1133,32 +1762,66 @@
     button.addEventListener("click", () => setMode(button.dataset.mode));
   });
   resetPromptsButton.addEventListener("click", () => resetPrompts());
+  if (undoPromptButton) undoPromptButton.addEventListener("click", undoPrompt);
+  if (redoPromptButton) redoPromptButton.addEventListener("click", redoPrompt);
   groundButton.addEventListener("click", autoGround);
   runButton.addEventListener("click", startAgent);
   segmentButton.addEventListener("click", startSegmentation);
+  if (maskAddButton) maskAddButton.addEventListener("click", () => setMaskTool("mask-add"));
+  if (maskEraseButton) maskEraseButton.addEventListener("click", () => setMaskTool("mask-erase"));
+  if (undoMaskStrokeButton) undoMaskStrokeButton.addEventListener("click", undoMaskStroke);
+  if (clearMaskStrokesButton) clearMaskStrokesButton.addEventListener("click", clearMaskStrokes);
+  if (toggleMaskOverlayButton) {
+    toggleMaskOverlayButton.addEventListener("click", () => {
+      state.maskOverlayVisible = !state.maskOverlayVisible;
+      redraw();
+      refreshActions();
+    });
+  }
+  if (showOriginalButton) showOriginalButton.addEventListener("click", toggleOriginalCanvas);
+  if (applyEditButton) applyEditButton.addEventListener("click", applyEdit);
+  if (resetEditButton) {
+    resetEditButton.addEventListener("click", () => {
+      if (!state.resultId || state.busy) return;
+      resetEditControls({ restoreCanvas: true });
+      setStatus("编辑设置已恢复默认；原始选区仍然保留。", "");
+    });
+  }
+  editorInputs.forEach((input) => {
+    input.addEventListener("input", syncEditControls);
+    input.addEventListener("change", syncEditControls);
+  });
 
   canvas.addEventListener("pointerdown", (event) => {
     if (!state.image || !state.imageId || state.busy) {
       return;
     }
     const point = pointFromEvent(event);
-    if (state.mode === "box") {
+    if (state.mode === "mask-add" || state.mode === "mask-erase") {
+      beginMaskStroke(point, event.pointerId);
+    } else if (state.mode === "box") {
       state.boxDragStart = point;
       state.draftBox = { x0: point.x, y0: point.y, x1: point.x, y1: point.y };
       canvas.setPointerCapture(event.pointerId);
     } else {
+      rememberPromptSnapshot();
       if (state.agentRunId && state.agentPhase === "needs_choice") {
         clearAgentState();
         clearGrounding();
         setStatus("已切换到手动提示。包含点会直接交给 SAM2。", "");
       }
       state.points.push({ x: point.x, y: point.y, label: state.mode === "positive" ? 1 : 0 });
+      markSelectionDirty();
       refreshActions();
     }
     redraw();
   });
 
   canvas.addEventListener("pointermove", (event) => {
+    if (state.activeMaskStroke && !state.busy && state.imageId) {
+      extendMaskStroke(pointFromEvent(event));
+      return;
+    }
     if (!state.draftBox || !state.boxDragStart || state.busy || !state.imageId) {
       return;
     }
@@ -1167,6 +1830,11 @@
   });
 
   canvas.addEventListener("pointerup", (event) => {
+    if (state.activeMaskStroke && !state.busy && state.imageId) {
+      extendMaskStroke(pointFromEvent(event));
+      completeMaskStroke(event.pointerId);
+      return;
+    }
     if (!state.draftBox || !state.boxDragStart || state.busy || !state.imageId) {
       return;
     }
@@ -1174,6 +1842,7 @@
     state.draftBox = null;
     state.boxDragStart = null;
     if (completed.x1 - completed.x0 >= 2 && completed.y1 - completed.y0 >= 2) {
+      rememberPromptSnapshot();
       state.box = completed;
       state.boxSource = "manual";
       const keepsManualAgent = state.agentRunId && state.agentPhase === "needs_manual_prompt";
@@ -1181,6 +1850,7 @@
         clearAgentState();
       }
       clearGrounding();
+      markSelectionDirty();
       setStatus("框选已添加。还可以添加正、负点来微调边界。", "success");
     } else {
       setStatus("框选太小，没有保存。", "error");
@@ -1193,9 +1863,40 @@
   });
 
   canvas.addEventListener("pointercancel", () => {
+    if (state.activeMaskStroke) {
+      state.activeMaskStroke = null;
+      rebuildMaskOverlay();
+    }
     state.draftBox = null;
     state.boxDragStart = null;
     redraw();
+  });
+
+  window.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const isTyping = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
+    if (isTyping) {
+      return;
+    }
+    if (event.key === "Escape" && (state.draftBox || state.activeMaskStroke)) {
+      state.draftBox = null;
+      state.boxDragStart = null;
+      state.activeMaskStroke = null;
+      rebuildMaskOverlay();
+      redraw();
+      return;
+    }
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") {
+      return;
+    }
+    event.preventDefault();
+    if (event.shiftKey) {
+      redoPrompt();
+    } else if ((state.mode === "mask-add" || state.mode === "mask-erase") && state.maskStrokes.length) {
+      undoMaskStroke();
+    } else {
+      undoPrompt();
+    }
   });
 
   window.addEventListener("beforeunload", () => {
@@ -1204,6 +1905,7 @@
   });
 
   setMode("positive");
+  syncEditControls();
   updateDescriptionCount();
   loadGroundingStatus();
   loadRuntimeStatus();
