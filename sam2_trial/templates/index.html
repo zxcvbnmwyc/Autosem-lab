@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AutoSEM：用自然语言定位，再用 SAM2 生成可下载的像素级轮廓。">
+    <meta name="description" content="AutoSEM：用一句话选出一个主体，再完成透明、纯色或虚化背景等可控局部处理。">
     <title>工作台 · AutoSEM</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
   </head>
@@ -24,7 +24,7 @@
         </nav>
         <div id="runtime-chip" class="runtime-chip" aria-live="polite">
           <span class="status-dot" aria-hidden="true"></span>
-          <span>正在检查本地引擎</span>
+          <span>正在检查处理引擎</span>
         </div>
       </div>
     </header>
@@ -32,13 +32,13 @@
     <main id="workspace" class="workspace-layout">
       <section class="workspace-intro" aria-labelledby="workspace-title">
         <div>
-          <p class="eyebrow">AUTOMATIC SEMANTIC SEGMENTATION</p>
-          <h1 id="workspace-title">从一句需求，到一张可继续修改的图片。</h1>
-          <p>Qwen 先理解你想保留的主体和效果，再由本地 SAM2 提取像素级边界并完成本地合成。结果不满意时，仍可以用点、框和画笔细化。</p>
+          <p class="eyebrow">CONTROLLED IMAGE EDITING</p>
+          <h1 id="workspace-title">一句话，完成选区和背景处理。</h1>
+          <p>说明你想保留的主体和背景效果。AutoSEM 只执行当前支持的操作；结果不满意时，随时用点、框和画笔继续调整。</p>
         </div>
         <aside class="privacy-note">
-          <strong>数据边界</strong>
-          <span>只有点击一键剪辑或 Qwen 自动定位时，图片和文字才会发送到你配置的模型服务；SAM2 分割和结果文件保留在本机。</span>
+          <strong>数据怎么用</strong>
+          <span>使用一键剪辑或 AI 自动定位时，图片和输入文字会发送给已配置的模型服务；选区和结果文件保存在运行 AutoSEM 的服务器。</span>
         </aside>
       </section>
 
@@ -48,22 +48,22 @@
             <span class="step-number">01</span>
             <div>
               <h2 id="input-title">一键剪辑</h2>
-              <p>上传一张图片，再用一句话告诉 AutoSEM 你想要什么。</p>
+              <p>上传一张图片，再用一句话说明你想保留谁、背景怎么处理。</p>
             </div>
           </div>
 
           <label id="upload-control" class="upload-control" for="file-input">
             <span class="upload-icon" aria-hidden="true">↑</span>
-            <span class="upload-copy"><b>选择本地图片</b><small>JPG、PNG 或 WebP，最大 25 MB</small></span>
+            <span class="upload-copy"><b>选择图片</b><small>JPG、PNG 或 WebP，最大 25 MB</small></span>
             <span class="upload-action">浏览</span>
             <input id="file-input" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp">
           </label>
           <p id="file-name" class="file-name" aria-live="polite">尚未选择图片</p>
 
-          <label class="field-label" for="description">你想怎么剪？</label>
+          <label class="field-label" for="description">想保留什么，怎么处理背景？</label>
           <textarea id="description" maxlength="500" rows="4" placeholder="例如：保留左边的人物，背景虚化并稍微提亮"></textarea>
           <div class="field-meta">
-            <span>一句话即可：Qwen 会理解主体和可执行的本地效果。</span>
+            <span>请一次描述一个主体。支持透明、纯色、虚化背景，以及轻微提亮或调色。</span>
             <span id="description-count">0 / 500</span>
           </div>
 
@@ -72,20 +72,20 @@
               <span aria-hidden="true">✦</span> 一键剪辑
             </button>
             <button id="run-button" class="button button--secondary" type="button" disabled>
-              启动手动分割 Agent
+              智能选区（可确认）
             </button>
             <button id="ground-button" class="button button--secondary" type="button" disabled>
-              只查看 Qwen 候选
+              查看 AI 推荐位置
             </button>
           </div>
-          <p id="grounding-status" class="engine-note" aria-live="polite">正在检查视觉模型配置…</p>
-          <p class="one-click-note">可自动：抠主体、透明 / 纯色 / 虚化背景、边缘优化与局部调色。生成式删除、替换和扩图暂未接入。</p>
+          <p id="grounding-status" class="engine-note" aria-live="polite">正在检查智能理解服务…</p>
+          <p class="one-click-note">一键范围：选取一个主体、处理背景、轻微修边和局部调整。不支持删人、换物、补图或扩图。</p>
 
           <section id="one-click-panel" class="one-click-panel" hidden aria-live="polite" aria-label="一键剪辑进度">
             <div class="one-click-panel__top">
               <span class="agent-mark" aria-hidden="true">✦</span>
               <div>
-                <p>ONE-CLICK EDIT</p>
+                <p>一键处理进度</p>
                 <h3 id="one-click-title">正在理解需求</h3>
               </div>
               <span id="one-click-stage" class="agent-stage">准备中</span>
@@ -94,11 +94,11 @@
             <p id="one-click-plan" class="one-click-plan" hidden></p>
           </section>
 
-          <section id="agent-panel" class="agent-panel" hidden aria-live="polite" aria-label="Agent 决策状态">
+          <section id="agent-panel" class="agent-panel" hidden aria-live="polite" aria-label="智能选区进度">
             <div class="agent-panel__top">
               <span class="agent-mark" aria-hidden="true">✦</span>
               <div>
-                <p>SEGMENTATION AGENT</p>
+                <p>智能选区进度</p>
                 <h3 id="agent-title">等待分析</h3>
               </div>
               <span id="agent-stage" class="agent-stage">待命</span>
@@ -113,7 +113,7 @@
             <span class="step-number">02</span>
             <div>
               <h2>手动细化（可选）</h2>
-              <p>需要时可在画布上加点或框选；这一步始终在本机进行。</p>
+              <p>需要时可在画布上加点或框选；这一步不会调用云端视觉模型。</p>
             </div>
           </div>
 
@@ -142,15 +142,15 @@
               <div class="panel-heading panel-heading--compact">
                 <span class="step-number">03</span>
                 <div>
-                  <h2 id="canvas-title">确认边界</h2>
-                  <p>选择候选框，或在图片上添加自己的提示。</p>
+                  <h2 id="canvas-title">查看并调整选区</h2>
+                  <p>系统找到的区域可以直接使用，也可以在图片上补充提示。</p>
                 </div>
               </div>
             </div>
             <div class="canvas-actions">
               <button id="toggle-mask-overlay" class="text-button canvas-action" type="button" hidden>隐藏选区</button>
               <button id="show-original-button" class="text-button canvas-action" type="button" hidden>查看原图</button>
-              <button id="segment-button" class="button button--dark" type="button" disabled>生成轮廓</button>
+              <button id="segment-button" class="button button--dark" type="button" disabled>生成选区</button>
             </div>
           </div>
 
@@ -159,7 +159,7 @@
             <div id="canvas-empty" class="canvas-empty">
               <span class="canvas-empty__icon" aria-hidden="true">◎</span>
               <strong>图片会显示在这里</strong>
-              <span>上传后，可直接点选、框选，或让 Qwen 推荐候选区域。</span>
+              <span>上传后，可一键处理，也可以直接点选或框选目标。</span>
             </div>
             <canvas id="image-canvas" aria-label="图片标注区域" hidden></canvas>
           </div>
@@ -174,8 +174,8 @@
           <div class="panel-heading panel-heading--compact">
             <span class="step-number">04</span>
             <div>
-              <h2 id="job-title">任务与结果</h2>
-              <p>本地推理会在后台排队，页面可保持响应。</p>
+              <h2 id="job-title">处理进度与结果</h2>
+              <p>选区会在后台处理，页面可以继续使用。</p>
             </div>
           </div>
 
@@ -184,35 +184,35 @@
               <span id="job-badge" class="job-badge">等待任务</span>
               <span id="job-elapsed" class="job-elapsed"></span>
             </div>
-            <strong id="job-title-text">还没有开始分割</strong>
-            <p id="job-message">添加点或框选后，点击“生成轮廓”。</p>
+            <strong id="job-title-text">还没有开始处理</strong>
+            <p id="job-message">上传图片后，可一键剪辑，或添加点/框选后生成选区。</p>
             <div class="job-progress" aria-hidden="true"><span id="job-progress-bar"></span></div>
           </div>
 
           <div id="result-section" class="result-section" hidden aria-labelledby="result-heading">
             <div class="result-heading-row">
-              <h3 id="result-heading">已生成</h3>
+              <h3 id="result-heading">选区已生成</h3>
               <span class="result-check" aria-label="完成">✓</span>
             </div>
-            <img id="result-preview" alt="SAM2 分割叠加预览">
+            <img id="result-preview" alt="选区叠加预览">
             <p id="result-summary" class="result-summary"></p>
-            <p class="result-disclaimer">估计 IoU 用于 SAM2 候选排序，并不等同于结果正确率。</p>
+            <p class="result-disclaimer">选区分数只用于排序，不代表结果一定正确；请按画面效果确认。</p>
             <div class="download-links">
-              <a id="mask-link" href="#" download>Mask PNG</a>
-              <a id="contours-link" href="#" download>透明轮廓 PNG</a>
-              <a id="json-link" href="#" download>轮廓 JSON</a>
+              <a id="mask-link" href="#" download>下载黑白 Mask</a>
+              <a id="contours-link" href="#" download>下载透明轮廓</a>
+              <a id="json-link" href="#" download>下载选区 JSON</a>
             </div>
           </div>
 
           <section id="editor-section" class="editor-section" hidden aria-labelledby="editor-heading">
             <div class="result-heading-row">
-              <h3 id="editor-heading">选区编辑</h3>
-              <span class="editor-chip">全分辨率导出</span>
+              <h3 id="editor-heading">继续微调</h3>
+              <span class="editor-chip">按原图尺寸导出</span>
             </div>
-            <p id="editor-note" class="editor-note">先微调选区，再生成预览。所有编辑都从原图和原始 SAM2 mask 重新合成。</p>
+            <p id="editor-note" class="editor-note">修改选区或背景效果后，再生成预览。每一次都会从原图和初始选区重新生成。</p>
 
             <div class="editor-group">
-              <div class="editor-group__heading"><strong>修选区</strong><span>在中间画布补画或擦除</span></div>
+              <div class="editor-group__heading"><strong>修选区</strong><span>在中间画布补画或擦掉</span></div>
               <div class="editor-tool-row" aria-label="选区画笔">
                 <button id="mask-add-button" class="mode-button" type="button" aria-pressed="false">补画选区</button>
                 <button id="mask-erase-button" class="mode-button" type="button" aria-pressed="false">擦除选区</button>
@@ -254,7 +254,7 @@
             </div>
 
             <div class="editor-group">
-              <div class="editor-group__heading"><strong>局部调整</strong><span>只作用于当前选区</span></div>
+              <div class="editor-group__heading"><strong>局部调整</strong><span>只作用于选中的主体</span></div>
               <label class="range-control" for="subject-brightness">
                 <span>亮度 <output id="subject-brightness-value">0</output></span>
                 <input id="subject-brightness" type="range" min="-60" max="60" step="1" value="0">
@@ -270,7 +270,7 @@
             </div>
 
             <div class="editor-actions">
-              <button id="apply-edit" class="button button--primary" type="button" disabled>生成编辑预览</button>
+              <button id="apply-edit" class="button button--primary" type="button" disabled>生成新预览</button>
               <button id="reset-edit" class="button button--secondary" type="button" disabled>恢复默认</button>
             </div>
 
@@ -295,7 +295,7 @@
     <footer class="site-footer">
       <div>
         <a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a>
-        <p>语义定位与像素级分割之间，留出可检查、可修正的一步。</p>
+        <p>先自动选区，再按你的判断完成图片处理。</p>
       </div>
       <div class="footer-links">
         <a href="/guide">使用指南</a>

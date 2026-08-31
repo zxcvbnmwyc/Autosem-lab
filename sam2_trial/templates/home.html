@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AutoSEM：把自然语言定位、SAM2 像素级选区和局部图片编辑串成一个可检查的工作流。">
-    <title>AutoSEM · 从描述到编辑</title>
+    <meta name="description" content="AutoSEM：用一句话选出一个主体，再完成透明、纯色或虚化背景等可控局部处理。">
+    <title>AutoSEM · 一键选区与局部处理</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
   </head>
   <body class="marketing-page">
@@ -27,14 +27,14 @@
     <main>
       <section class="landing-hero">
         <div class="landing-hero__copy">
-          <p class="eyebrow">AUTOMATIC SEMANTIC SEGMENTATION</p>
-          <h1>准确的边界，<br>才是编辑的开始。</h1>
-          <p class="landing-lead">AutoSEM 把“用语言找到目标”“用 SAM2 提取边界”和“按选区局部编辑”串成一条可检查的工作流。</p>
+          <p class="eyebrow">CONTROLLED IMAGE EDITING</p>
+          <h1>一句话选出主体，<br>再把背景处理好。</h1>
+          <p class="landing-lead">说清想保留谁、背景怎么处理。AutoSEM 会选出一个主体，完成当前支持的局部处理；边界不满意时，随时可以手动修正。</p>
           <div class="hero-actions">
             <a class="button button--primary button--large" href="/workspace">开始编辑图片 <span aria-hidden="true">→</span></a>
             <a class="text-link" href="/guide">先看看怎么用 <span aria-hidden="true">↓</span></a>
           </div>
-          <p class="hero-note"><span class="hero-note__dot"></span>本地 SAM2 分割 · 可选 Qwen 自动定位</p>
+          <p class="hero-note"><span class="hero-note__dot"></span>服务器内生成选区 · 按需使用 AI 理解文字</p>
         </div>
 
         <div class="hero-visual" aria-label="AutoSEM 工作流程示意">
@@ -49,43 +49,43 @@
               <div class="visual-path"></div>
             </div>
           </div>
-          <div class="visual-float visual-float--qwen"><b>Qwen</b><span>语义定位</span></div>
-          <div class="visual-float visual-float--sam"><b>SAM2</b><span>像素级轮廓</span></div>
+          <div class="visual-float visual-float--qwen"><b>AI</b><span>理解图片需求</span></div>
+          <div class="visual-float visual-float--sam"><b>选区</b><span>精确主体边界</span></div>
         </div>
       </section>
 
       <section class="workflow-section" aria-labelledby="workflow-title">
         <div class="section-kicker">
           <p class="eyebrow">A SIMPLE, CHECKABLE LOOP</p>
-          <h2 id="workflow-title">三步完成，随时介入。</h2>
+          <h2 id="workflow-title">三步完成，随时可修。</h2>
         </div>
         <div class="workflow-grid">
           <article class="workflow-card">
             <span class="workflow-index">01</span>
             <div class="workflow-icon workflow-icon--describe" aria-hidden="true">Aa</div>
-            <h3>描述你想要的</h3>
-            <p>用一句自然语言说明目标。需要时，Qwen 会先把描述转换为可见的候选框。</p>
+            <h3>说清主体和效果</h3>
+            <p>例如：“保留左边的人物，背景虚化并稍微提亮”。一次只描述一个主体，结果更稳定。</p>
           </article>
           <article class="workflow-card workflow-card--featured">
             <span class="workflow-index">02</span>
             <div class="workflow-icon workflow-icon--check" aria-hidden="true">⌁</div>
-            <h3>检查并细化</h3>
-            <p>选择合适的候选框，或通过正负点、手动框选告诉模型边界应该在哪里。</p>
+            <h3>自动选区，也可细化</h3>
+            <p>一键处理会自动生成选区；不满意时，可用点、框和画笔继续调整。</p>
           </article>
           <article class="workflow-card">
             <span class="workflow-index">03</span>
             <div class="workflow-icon workflow-icon--export" aria-hidden="true">↓</div>
-            <h3>局部编辑并导出</h3>
-            <p>补画选区、替换背景、局部调色，再导出保持原图尺寸的 PNG。</p>
+            <h3>处理背景并导出</h3>
+            <p>可导出透明、纯色或虚化背景的原图尺寸 PNG，也可以保留选区文件继续处理。</p>
           </article>
         </div>
       </section>
 
       <section class="feature-split">
         <div class="feature-split__copy">
-          <p class="eyebrow">HUMAN IN THE LOOP</p>
-          <h2>模型做重活，<br>你保留判断。</h2>
-          <p>全自动生成很方便，但小目标、重叠物体和专业图像常常需要一句更具体的描述或一个额外提示。选区出来后，你还可以补画、擦除、收缩或羽化边缘，再决定如何处理背景与主体。</p>
+          <p class="eyebrow">YOU STAY IN CONTROL</p>
+          <h2>自动完成第一步，<br>最后一笔由你决定。</h2>
+          <p>自动选区能省去重复工作；遇到小目标、重叠物体或复杂边缘时，你可以补画、擦除、收缩或羽化选区，再决定如何处理背景与主体。</p>
           <a class="text-link" href="/guide">了解提示怎么用 <span aria-hidden="true">→</span></a>
         </div>
         <div class="prompt-demo">
@@ -107,19 +107,19 @@
       <section class="boundary-section">
         <div>
           <p class="eyebrow">CLEAR BOUNDARIES</p>
-          <h2>每一步都知道数据去了哪里。</h2>
+          <h2>知道能做什么，也知道数据去了哪里。</h2>
         </div>
         <div class="boundary-grid">
-          <article><span class="boundary-number">01</span><h3>本地分割</h3><p>SAM2 在运行 AutoSEM 的机器上读取图像、生成 mask 和轮廓。</p></article>
-          <article><span class="boundary-number">02</span><h3>按需云端定位</h3><p>只有你选择 Qwen 自动定位时，图片与描述才会发送到你配置的模型服务。</p></article>
-          <article><span class="boundary-number">03</span><h3>明确输出</h3><p>结果以标准图像与 JSON 文件保存，方便你复查、下载和后续处理。</p></article>
+          <article><span class="boundary-number">01</span><h3>服务器内处理</h3><p>上传后的图片、选区生成、合成和导出，都在运行 AutoSEM 的服务器内完成。</p></article>
+          <article><span class="boundary-number">02</span><h3>按需 AI 理解</h3><p>只有使用一键剪辑或 AI 自动定位时，图片与描述才会发送到已配置的模型服务。</p></article>
+          <article><span class="boundary-number">03</span><h3>可下载、可继续用</h3><p>直接导出处理后的图片；需要时，也可以下载选区文件继续加工。</p></article>
         </div>
       </section>
 
       <section class="landing-cta">
         <p class="eyebrow">READY WHEN YOU ARE</p>
         <h2>从一张图片开始。</h2>
-        <p>不需要学习一套新工作流。上传、描述、检查边界、局部编辑，然后导出。</p>
+        <p>上传、描述、预览、导出；需要更精细时，再回到选区继续调整。</p>
         <a class="button button--primary button--large" href="/workspace">进入工作台 <span aria-hidden="true">→</span></a>
       </section>
     </main>
@@ -127,7 +127,7 @@
     <footer class="site-footer site-footer--wide">
       <div>
         <a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a>
-        <p>语义定位与像素级分割之间，留出可检查、可修正的一步。</p>
+        <p>先自动选区，再按你的判断完成图片处理。</p>
       </div>
       <div class="footer-links">
         <a href="/workspace">工作台</a>

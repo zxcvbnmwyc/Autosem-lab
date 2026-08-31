@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AutoSEM 使用指南：自动定位、点和框提示、选区微调与局部图片编辑。">
+    <meta name="description" content="AutoSEM 使用指南：一句话选区、手动细化、背景处理与图片导出。">
     <title>使用指南 · AutoSEM</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
   </head>
@@ -21,44 +21,44 @@
         <span>使用指南</span>
         <a href="#start">开始前</a>
         <a href="#one-click">一键剪辑</a>
-        <a href="#auto">自动定位</a>
+        <a href="#auto">智能选区</a>
         <a href="#manual">手动提示</a>
         <a href="#edit">选区编辑</a>
         <a href="#result">结果与导出</a>
       </aside>
       <article class="document-content">
         <p class="eyebrow">GUIDE</p>
-        <h1>把模糊的“想要”，<br>变成清晰的轮廓。</h1>
-        <p class="document-lead">AutoSEM 的核心流程很简单：上传图片 → 用一句话描述效果 → 生成选区 → 局部编辑并导出。一键剪辑能自动串联流程，手动提示让你在需要时收紧结果。</p>
+        <h1>先选对主体，<br>再处理图片。</h1>
+        <p class="document-lead">上传图片后，用一句话说明想保留的主体和背景效果，就能生成选区并导出。想直接完成就用一键剪辑；需要更精细时，再用点、框和画笔调整。</p>
 
         <section id="start">
           <span class="content-step">01</span>
           <h2>开始前</h2>
-          <p>支持 JPG、PNG 与 WebP，单张图片最大 25 MB。上传后的图片会显示在工作台中央。你可以直接在画布中点选或框选，不必填写描述。</p>
-          <div class="guide-note"><strong>一个实用原则</strong><span>把目标说成“位置 + 外观 + 对象”。例如“左下角的蓝色杯子”通常比“杯子”更容易定位。</span></div>
+          <p>支持 JPG、PNG 与 WebP，单张图片最大 25 MB。上传后图片会显示在工作台中央。你可以直接在图片上点选或框选，不必填写描述。</p>
+          <div class="guide-note"><strong>一个实用原则</strong><span>一次处理一个清楚可见的主体。把目标说成“位置 + 外观 + 对象”，例如“左下角的蓝色杯子”，通常比只写“杯子”更容易定位。</span></div>
         </section>
 
         <section id="one-click">
           <span class="content-step">02</span>
           <h2>一句话一键剪辑</h2>
-          <p>例如输入“保留左边的人物，背景虚化并稍微提亮”，Qwen 会先从网站当前支持的剪辑能力中检索相关操作，再将文字转换为受限的本地编辑计划，自动定位主体，再由 SAM2 生成像素级选区并合成结果。整个过程只需点击一次。</p>
-          <div class="guide-note"><strong>当前可自动完成</strong><span>抠主体、透明/纯色/虚化背景、边缘优化，以及主体亮度、饱和度和轻微模糊。删除路人、替换物体、扩图等生成式修改暂未接入。</span></div>
+          <p>例如输入“保留左边的人物，背景虚化并稍微提亮”。系统会在当前支持的效果中选择合适操作，自动选取一个主体并生成结果；完成后仍可以手动修边和调整。</p>
+          <div class="guide-note"><strong>当前可自动完成</strong><span>透明、纯色或虚化背景，以及轻微修边、提亮和调色。暂不支持删除路人并补背景、替换物体、扩图或换场景。</span></div>
         </section>
 
         <section id="auto">
           <span class="content-step">03</span>
-          <h2>使用自动定位</h2>
+          <h2>使用智能选区</h2>
           <p>填写描述后，可以选择两种方式：</p>
           <div class="guide-options">
-            <div><b>自动定位并生成轮廓</b><p>Qwen 先返回最匹配的候选框，AutoSEM 随即将它交给 SAM2 完成分割。</p></div>
-            <div><b>仅自动定位</b><p>先查看候选框；你可以切换候选、补充点或重新框选，再自行点击生成。</p></div>
+            <div><b>智能选区（可确认）</b><p>系统推荐主体位置并生成初始选区；在继续前，你可以确认、补点或改用框选。</p></div>
+            <div><b>查看 AI 推荐位置</b><p>先查看可能的区域；你可以切换候选、补充点或重新框选，再自行生成选区。</p></div>
           </div>
-          <p>当你点击自动定位，当前图片和描述会发送到已配置的视觉模型服务。候选框不是最终轮廓，而是给 SAM2 的空间提示。</p>
+          <p>使用这两项功能时，当前图片和描述会发送到已配置的视觉模型服务。推荐位置不是最终选区，而是帮助系统更准确选中主体的提示。</p>
         </section>
 
         <section id="manual">
           <span class="content-step">04</span>
-          <h2>用点和框细化</h2>
+          <h2>用点和框修选区</h2>
           <div class="prompt-guide">
             <div><span class="prompt-dot prompt-dot--positive"></span><b>包含点</b><p>点在你希望保留的目标内部。主体中心通常是最有效的第一个点。</p></div>
             <div><span class="prompt-dot prompt-dot--negative"></span><b>排除点</b><p>点在不属于目标、却被误包含的区域，用来让边界收紧。</p></div>
@@ -70,7 +70,7 @@
         <section id="edit">
           <span class="content-step">05</span>
           <h2>把选区变成局部编辑</h2>
-          <p>轮廓完成后，工作台会进入选区编辑阶段。你可以在中央画布补画需要保留的区域，或擦掉误选区域；这些笔刷只会在最终导出时作用于服务端保存的原始 SAM2 mask，不会降低图片分辨率。</p>
+          <p>选区完成后，工作台会进入编辑阶段。你可以在中央画布补画需要保留的区域，或擦掉误选区域；画笔只会修改当前选区，每次导出都会从原图重新生成，不会因为预览而缩小图片。</p>
           <div class="guide-options">
             <div><b>边缘与背景</b><p>可收缩或扩展选区、轻微羽化边缘，并保留原背景、换成透明/纯色背景，或只虚化背景。</p></div>
             <div><b>局部调整</b><p>亮度、饱和度与模糊只会作用于已选主体；每次生成预览都从原图重新合成，因此可以放心重置重来。</p></div>
@@ -80,19 +80,19 @@
         <section id="result">
           <span class="content-step">06</span>
           <h2>结果与导出</h2>
-          <p>提交后，任务会显示排队或运行状态。CPU 推理的时间会随图片大小、提示数量和本机配置变化，因此工作台不会承诺固定用时。</p>
+          <p>提交后，任务会显示排队或运行状态。处理时间会受图片大小、提示数量和当前排队情况影响，因此工作台不会承诺固定用时。</p>
           <ul>
             <li><b>当前编辑 PNG：</b>保留原图尺寸，可导出透明抠图、纯色背景或背景虚化后的版本。</li>
             <li><b>修正后 Mask：</b>包含补画、擦除与边缘调整后的选区。</li>
             <li><b>Mask PNG：</b>黑白二值掩码，适合继续处理。</li>
-            <li><b>透明轮廓 PNG：</b>保留透明背景的轮廓图，便于叠加查看。</li>
-            <li><b>轮廓 JSON：</b>轮廓的结构化坐标数据，可用于下游工具。</li>
+            <li><b>透明轮廓 PNG：</b>用于叠加查看主体边界。</li>
+            <li><b>选区 JSON：</b>选区的结构化坐标数据，可用于下游工具。</li>
           </ul>
           <a class="button button--primary" href="/workspace">去工作台试一次 <span aria-hidden="true">→</span></a>
         </section>
       </article>
     </main>
 
-    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>语义定位与像素级分割之间，留出可检查、可修正的一步。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/privacy">隐私说明</a></div></footer>
+    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>先自动选区，再按你的判断完成图片处理。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/privacy">隐私说明</a></div></footer>
   </body>
 </html>

@@ -44,9 +44,9 @@ HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 EDIT_PLAN_STATUSES = {"ready", "needs_input", "unsupported"}
 EDIT_PLAN_BACKGROUND_MODES = {"original", "transparent", "color", "blur"}
 PLAN_STATUS_DEFAULT_SUMMARIES = {
-    "ready": "已准备好按当前能力完成这次本地剪辑。",
-    "needs_input": "请补充一个明确的可见主体和想要的本地编辑效果。",
-    "unsupported": "这个需求超出了当前本地剪辑工具的能力范围。",
+    "ready": "已准备好按当前能力完成这次图片处理。",
+    "needs_input": "请补充一个明确的可见主体和想要的图片处理效果。",
+    "unsupported": "这个需求超出了当前图片处理工具的能力范围。",
 }
 
 
@@ -699,7 +699,7 @@ class QwenGrounder:
         api_key = self._api_key_value()
         if not api_key:
             raise GroundingError(
-                "尚未配置 DASHSCOPE_API_KEY。复制 .env.example 为 .env 后填入本机密钥。"
+                "尚未配置 DASHSCOPE_API_KEY。请联系网站管理员完成服务器端模型配置。"
             )
 
         endpoint = self._base_url_value() + "/chat/completions"
