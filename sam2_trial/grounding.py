@@ -755,7 +755,7 @@ class QwenEditPlanner(QwenGrounder):
     def plan(self, image_rgb: np.ndarray, instruction: str) -> OneClickEditPlan:
         api_key = self._api_key_value()
         if not api_key:
-            raise GroundingError("尚未配置 DASHSCOPE_API_KEY，暂时不能使用一键剪辑。")
+            raise GroundingError("一键处理尚未配置。")
 
         endpoint = self._base_url_value() + "/chat/completions"
         retrieval = retrieve_editing_knowledge(instruction)

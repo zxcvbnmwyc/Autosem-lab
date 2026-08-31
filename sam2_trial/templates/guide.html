@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="AutoSEM 使用指南：一句话选区、手动细化、背景处理与图片导出。">
+    <meta name="description" content="AutoSEM 使用指南：选主体，处理背景，导出图片。">
     <title>使用指南 · AutoSEM</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}">
   </head>
@@ -20,79 +20,75 @@
       <aside class="document-toc" aria-label="本页目录">
         <span>使用指南</span>
         <a href="#start">开始前</a>
-        <a href="#one-click">一键剪辑</a>
-        <a href="#auto">智能选区</a>
+        <a href="#one-click">一键处理</a>
+        <a href="#auto">自动选区</a>
         <a href="#manual">手动提示</a>
         <a href="#edit">选区编辑</a>
         <a href="#result">结果与导出</a>
       </aside>
       <article class="document-content">
-        <p class="eyebrow">GUIDE</p>
-        <h1>先选对主体，<br>再处理图片。</h1>
-        <p class="document-lead">上传图片后，用一句话说明想保留的主体和背景效果，就能生成选区并导出。想直接完成就用一键剪辑；需要更精细时，再用点、框和画笔调整。</p>
+        <h1>选出主体，<br>处理背景。</h1>
+        <p class="document-lead">上传后，可一键处理或手动选区；不满意再用点、框和画笔调整。</p>
 
         <section id="start">
           <span class="content-step">01</span>
           <h2>开始前</h2>
-          <p>支持 JPG、PNG 与 WebP，单张图片最大 25 MB。上传后图片会显示在工作台中央。你可以直接在图片上点选或框选，不必填写描述。</p>
-          <div class="guide-note"><strong>一个实用原则</strong><span>一次处理一个清楚可见的主体。把目标说成“位置 + 外观 + 对象”，例如“左下角的蓝色杯子”，通常比只写“杯子”更容易定位。</span></div>
+          <p>支持 JPG、PNG 和 WebP，单张最大 25 MB。上传后可直接点选或框选。</p>
+          <div class="guide-note"><strong>写具体一点</strong><span>一次选一个主体，例如“左下角的蓝色杯子”。</span></div>
         </section>
 
         <section id="one-click">
           <span class="content-step">02</span>
-          <h2>一句话一键剪辑</h2>
-          <p>例如输入“保留左边的人物，背景虚化并稍微提亮”。系统会在当前支持的效果中选择合适操作，自动选取一个主体并生成结果；完成后仍可以手动修边和调整。</p>
-          <div class="guide-note"><strong>当前可自动完成</strong><span>透明、纯色或虚化背景，以及轻微修边、提亮和调色。暂不支持删除路人并补背景、替换物体、扩图或换场景。</span></div>
+          <h2>一句话一键处理</h2>
+          <p>例如：“保留左边的人物，背景虚化”。完成后还能继续修改。</p>
+          <div class="guide-note"><strong>能做什么</strong><span>透明、纯色、虚化背景和小幅调色、修边。不能删人、换物、补图或扩图。</span></div>
         </section>
 
         <section id="auto">
           <span class="content-step">03</span>
-          <h2>使用智能选区</h2>
-          <p>填写描述后，可以选择两种方式：</p>
+          <h2>找推荐位置</h2>
+          <p>让系统先找位置，确认后生成选区。</p>
           <div class="guide-options">
-            <div><b>智能选区（可确认）</b><p>系统推荐主体位置并生成初始选区；在继续前，你可以确认、补点或改用框选。</p></div>
-            <div><b>查看 AI 推荐位置</b><p>先查看可能的区域；你可以切换候选、补充点或重新框选，再自行生成选区。</p></div>
+            <div><b>自动选区</b><p>先找推荐位置，确认后生成初始选区。</p></div>
+            <div><b>查看推荐位置</b><p>先看位置，再补点或框选。</p></div>
           </div>
-          <p>使用这两项功能时，当前图片和描述会发送到已配置的视觉模型服务。推荐位置不是最终选区，而是帮助系统更准确选中主体的提示。</p>
+          <p>使用这两项功能时，图片和描述会发送给模型服务。推荐位置不是最终选区。</p>
         </section>
 
         <section id="manual">
           <span class="content-step">04</span>
           <h2>用点和框修选区</h2>
           <div class="prompt-guide">
-            <div><span class="prompt-dot prompt-dot--positive"></span><b>包含点</b><p>点在你希望保留的目标内部。主体中心通常是最有效的第一个点。</p></div>
-            <div><span class="prompt-dot prompt-dot--negative"></span><b>排除点</b><p>点在不属于目标、却被误包含的区域，用来让边界收紧。</p></div>
-            <div><span class="box-icon"></span><b>框选</b><p>拖动一个刚好包住目标的框。它可以单独使用，也能配合点提示。</p></div>
+            <div><span class="prompt-dot prompt-dot--positive"></span><b>包含点</b><p>点在要保留的对象内。</p></div>
+            <div><span class="prompt-dot prompt-dot--negative"></span><b>排除点</b><p>点在误选区域。</p></div>
+            <div><span class="box-icon"></span><b>框选</b><p>框住目标。</p></div>
           </div>
-          <p>对于复杂图像，先用一个框确定范围，再添加 1–2 个包含点；如果把邻近物体一起选进来了，再添加一个排除点。提示应尽量远离边界。</p>
+          <p>复杂画面先框住目标，再加点。</p>
         </section>
 
         <section id="edit">
           <span class="content-step">05</span>
-          <h2>把选区变成局部编辑</h2>
-          <p>选区完成后，工作台会进入编辑阶段。你可以在中央画布补画需要保留的区域，或擦掉误选区域；画笔只会修改当前选区，每次导出都会从原图重新生成，不会因为预览而缩小图片。</p>
+          <h2>编辑选区</h2>
+          <p>可以补画需要保留的区域，或擦掉误选区域。每次导出都从原图重做。</p>
           <div class="guide-options">
-            <div><b>边缘与背景</b><p>可收缩或扩展选区、轻微羽化边缘，并保留原背景、换成透明/纯色背景，或只虚化背景。</p></div>
-            <div><b>局部调整</b><p>亮度、饱和度与模糊只会作用于已选主体；每次生成预览都从原图重新合成，因此可以放心重置重来。</p></div>
+            <div><b>边缘与背景</b><p>可收缩、扩展、羽化选区，或处理背景。</p></div>
+            <div><b>局部调整</b><p>亮度、饱和度和模糊只作用于主体。</p></div>
           </div>
         </section>
 
         <section id="result">
           <span class="content-step">06</span>
           <h2>结果与导出</h2>
-          <p>提交后，任务会显示排队或运行状态。处理时间会受图片大小、提示数量和当前排队情况影响，因此工作台不会承诺固定用时。</p>
+          <p>处理时间取决于图片大小和当前排队情况。</p>
           <ul>
-            <li><b>当前编辑 PNG：</b>保留原图尺寸，可导出透明抠图、纯色背景或背景虚化后的版本。</li>
-            <li><b>修正后 Mask：</b>包含补画、擦除与边缘调整后的选区。</li>
-            <li><b>Mask PNG：</b>黑白二值掩码，适合继续处理。</li>
-            <li><b>透明轮廓 PNG：</b>用于叠加查看主体边界。</li>
-            <li><b>选区 JSON：</b>选区的结构化坐标数据，可用于下游工具。</li>
+            <li><b>当前编辑 PNG：</b>处理后的图片。</li>
+            <li><b>选区文件：</b>Mask、透明轮廓和 JSON，可继续使用。</li>
           </ul>
           <a class="button button--primary" href="/workspace">去工作台试一次 <span aria-hidden="true">→</span></a>
         </section>
       </article>
     </main>
 
-    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>先自动选区，再按你的判断完成图片处理。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/privacy">隐私说明</a></div></footer>
+    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>图片选区和背景处理。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/privacy">隐私说明</a></div></footer>
   </body>
 </html>

@@ -141,12 +141,12 @@
   };
 
   const phaseCopy = {
-    queued: "任务正在等待服务器处理。",
-    loading_model: "正在准备选区引擎。",
-    encoding_image: "正在编码图片。",
+    queued: "等待处理。",
+    loading_model: "正在准备。",
+    encoding_image: "正在处理图片。",
     predicting: "正在生成选区。",
-    rendering: "正在整理选区与下载文件。",
-    succeeded: "选区已生成，可以下载结果。",
+    rendering: "正在整理结果。",
+    succeeded: "选区已生成。",
   };
 
   function setStatus(message, kind) {
@@ -254,8 +254,8 @@
     }
     if (editorNote && state.resultId) {
       editorNote.textContent = state.selectionDirty
-        ? "提示已经改动。请先点击“更新选区”，再继续局部编辑。"
-        : "修改选区或背景效果后，再生成预览。每一次都会从原图和初始选区重新生成。";
+        ? "提示已改，先更新选区。"
+        : "改好后生成预览；每次都从原图重做。";
     }
   }
 
@@ -270,13 +270,13 @@
 
     runButton.innerHTML = isBusy && action === "agent"
       ? "<span aria-hidden=\"true\">⋯</span> 正在分析图片"
-      : "<span aria-hidden=\"true\">✦</span> 智能选区（可确认）";
+      : "<span aria-hidden=\"true\">✦</span> 自动选区";
     if (oneClickButton) {
       oneClickButton.innerHTML = isBusy && action === "one-click"
         ? "<span aria-hidden=\"true\">⋯</span> 正在一键处理"
-        : "<span aria-hidden=\"true\">✦</span> 一键剪辑";
+        : "<span aria-hidden=\"true\">✦</span> 一键处理";
     }
-    groundButton.textContent = isBusy && action === "ground" ? "正在寻找推荐位置…" : "查看 AI 推荐位置";
+    groundButton.textContent = isBusy && action === "ground" ? "正在找推荐位置…" : "查看推荐位置";
     segmentButton.textContent = isBusy && action === "segment"
       ? "任务进行中…"
       : state.selectionDirty ? "更新选区" : "生成选区";
@@ -684,7 +684,7 @@
     rebuildMaskOverlay();
     redraw();
     refreshActions();
-    setStatus("选区笔刷已记录。点击“生成编辑预览”即可按原图尺寸导出。", "success");
+    setStatus("已记录笔刷，可生成原图尺寸预览。", "success");
     return true;
   }
 
@@ -740,15 +740,46 @@
 
   function oneClickPhaseMeta(phase) {
     return {
-      planning: { title: "正在理解你的需求", stage: "理解中" },
-      segmenting: { title: "正在生成主体选区", stage: "选区中" },
-      ready_to_apply: { title: "正在处理背景和局部效果", stage: "合成中" },
-      composing: { title: "正在按原图尺寸合成", stage: "合成中" },
-      completed: { title: "一键剪辑已完成", stage: "完成" },
-      needs_input: { title: "需要更具体的需求", stage: "待补充" },
-      unsupported: { title: "当前能力暂不支持", stage: "受限" },
-      failed: { title: "这次没有完成", stage: "可重试" },
-    }[phase] || { title: "一键处理准备中", stage: "准备中" };
+      planning: { title: "正在准备处理", stage: "处理中" },
+      segmenting: { title: "正在生成选区", stage: "选区中" },
+      ready_to_apply: { title: "正在处理图片", stage: "处理中" },
+      composing: { title: "正在生成结果", stage: "处理中" },
+      completed: { title: "处理完成", stage: "完成" },
+      needs_input: { title: "请补充需求", stage: "待补充" },
+      unsupported: { title: "当前不支持", stage: "受限" },
+      failed: { title: "处理未完成", stage: "可重试" },
+    }[phase] || { title: "正在处理", stage: "处理中" };
+  }
+
+  function oneClickPlanSummary(plan) {
+    if (!plan || typeof plan !== "object") {
+      return "";
+    }
+    const pieces = [];
+    const target = typeof plan.target === "string" ? plan.target.trim().slice(0, 48) : "";
+    if (target) {
+      pieces.push("主体：" + target);
+    }
+    const background = plan.background && typeof plan.background === "object" ? plan.background : {};
+    const backgroundCopy = {
+      original: "保留原背景",
+      transparent: "透明背景",
+      color: "纯色背景",
+      blur: "背景虚化",
+    };
+    if (typeof background.mode === "string" && backgroundCopy[background.mode]) {
+      pieces.push(backgroundCopy[background.mode]);
+    }
+    const subject = plan.subject && typeof plan.subject === "object" ? plan.subject : {};
+    const brightness = Number(subject.brightness);
+    const saturation = Number(subject.saturation);
+    if (Number.isFinite(brightness) && brightness !== 0) {
+      pieces.push(brightness > 0 ? "提亮" : "调暗");
+    }
+    if (Number.isFinite(saturation) && saturation !== 0) {
+      pieces.push(saturation > 0 ? "提高饱和度" : "降低饱和度");
+    }
+    return pieces.join(" · ");
   }
 
   function renderOneClickPanel() {
@@ -764,11 +795,10 @@
     oneClickPanel.className = "one-click-panel one-click-panel--" + state.oneClickPhase.replaceAll("_", "-");
     oneClickTitle.textContent = meta.title;
     oneClickStage.textContent = meta.stage;
-    oneClickMessage.textContent = state.oneClickMessage || "正在整理一键处理步骤。";
-    const plan = state.oneClickPlan;
-    if (plan && typeof plan === "object" && typeof plan.summary === "string" && plan.summary.trim()) {
-      const target = typeof plan.target === "string" && plan.target.trim() ? "主体：「" + plan.target.trim() + "」 · " : "";
-      oneClickPlan.textContent = target + "处理内容：" + plan.summary.trim();
+    oneClickMessage.textContent = state.oneClickMessage || "正在准备处理。";
+    const summary = oneClickPlanSummary(state.oneClickPlan);
+    if (summary) {
+      oneClickPlan.textContent = summary;
       oneClickPlan.hidden = false;
     } else {
       oneClickPlan.hidden = true;
@@ -813,11 +843,11 @@
 
   function applyOneClickRun(run) {
     if (!run || typeof run.run_id !== "string" || typeof run.phase !== "string") {
-      throw new Error("一键剪辑没有返回有效状态，请重新试一次。");
+      throw new Error("一键处理没有返回有效状态，请重新试一次。");
     }
     state.oneClickRunId = run.run_id;
     state.oneClickPhase = run.phase;
-    state.oneClickMessage = typeof run.message === "string" ? run.message : "正在处理一键剪辑。";
+    state.oneClickMessage = typeof run.message === "string" ? run.message : "正在处理。";
     state.oneClickPlan = run.plan && typeof run.plan === "object" ? run.plan : null;
     if (run.selected_candidate && typeof run.selected_candidate === "object") {
       applyOneClickCandidate(run.selected_candidate);
@@ -836,7 +866,7 @@
       needs_refinement: { title: "建议再细化一次", stage: "可细化" },
       completed: { title: "已完成基础复核", stage: "完成" },
       failed: { title: "需要新的提示", stage: "可重试" },
-    }[phase] || { title: "智能选区正在等待", stage: "待命" };
+    }[phase] || { title: "正在准备下一步", stage: "待命" };
   }
 
   function addAgentAction(label, className, handler) {
@@ -860,7 +890,7 @@
     agentPanel.className = "agent-panel agent-panel--" + phase.replaceAll("_", "-");
     agentTitle.textContent = meta.title;
     agentStage.textContent = meta.stage;
-    agentMessage.textContent = state.agentMessage || "智能选区正在整理下一步。";
+    agentMessage.textContent = state.agentMessage || "正在准备下一步。";
     agentActions.replaceChildren();
 
     if (phase === "needs_choice") {
@@ -868,7 +898,7 @@
         clearAgentState();
         clearGrounding();
         setMode("positive");
-        setStatus("已切换到手动提示。请在目标主体内添加一个包含点，或框选目标。", "");
+        setStatus("已切换到手动选区。请点选或框选主体。", "");
       });
     } else if (phase === "needs_confirmation" || phase === "ready_to_segment") {
       addAgentAction("确认并生成选区", "button--primary", startAgentSegmentation);
@@ -876,7 +906,7 @@
         clearAgentState();
         clearGrounding();
         setMode("positive");
-        setStatus("已切换到手动提示。请添加点或框选一个目标区域。", "");
+        setStatus("已切换到手动选区。请点选或框选主体。", "");
       });
     } else if (phase === "needs_manual_prompt") {
       addAgentAction("添加包含点", "button--primary", () => setMode("positive"));
@@ -894,11 +924,11 @@
 
   function applyAgentRun(run) {
     if (!run || typeof run.agent_id !== "string" || typeof run.phase !== "string") {
-      throw new Error("智能选区没有返回有效状态，请重新分析图片。" );
+      throw new Error("自动选区没有返回有效状态，请重新试一次。" );
     }
     state.agentRunId = run.agent_id;
     state.agentPhase = run.phase;
-    state.agentMessage = typeof run.message === "string" ? run.message : "智能选区正在等待下一步。";
+    state.agentMessage = typeof run.message === "string" ? run.message : "正在准备下一步。";
     state.agentEvaluation = run.evaluation && typeof run.evaluation === "object" ? run.evaluation : null;
     state.groundingId = typeof run.grounding_id === "string" ? run.grounding_id : null;
     state.groundingCandidates = Array.isArray(run.candidates) ? run.candidates.slice(0, 3) : [];
@@ -948,7 +978,7 @@
     const candidate = state.groundingCandidates[index];
     const box = candidateToBox(candidate);
     if (!box) {
-      setStatus("AI 返回的推荐位置无效，请重新定位或手动框选。", "error");
+      setStatus("推荐位置无效，请重新定位或手动框选。", "error");
       return false;
     }
     const changed = !state.box || state.box.x0 !== box.x0 || state.box.y0 !== box.y0 || state.box.x1 !== box.x1 || state.box.y1 !== box.y1 || state.boxSource !== "qwen";
@@ -976,12 +1006,12 @@
     const heading = document.createElement("p");
     heading.className = "candidate-heading";
     heading.textContent = state.agentPhase === "needs_choice"
-      ? "系统找到了多个可能区域。请点选你真正想要的对象。"
+      ? "找到多个候选，请选一个。"
       : state.agentPhase === "needs_confirmation"
-        ? "系统找到了一个可能区域。确认后即可生成选区。"
+        ? "找到一个候选，确认后生成选区。"
         : state.groundingCandidates.length === 1
-      ? "AI 推荐了这个区域；可直接生成选区，也可再补充提示。"
-      : "选择一个候选区域，再确认或细化边界。";
+      ? "已推荐一个区域；可生成或补充提示。"
+      : "选择候选，再微调边界。";
     candidateChoices.append(heading);
 
     const buttons = document.createElement("div");
@@ -995,18 +1025,17 @@
       button.setAttribute("aria-pressed", String(selected));
       button.disabled = state.busy;
 
-      const confidence = num(candidate.confidence);
       const label = typeof candidate.label === "string" && candidate.label.trim()
         ? candidate.label.trim()
         : "候选区域";
-      button.textContent = "候选 " + String(index + 1) + " · " + label + (confidence === null ? "" : " · " + String(Math.round(confidence * 100)) + "%");
+      button.textContent = "候选 " + String(index + 1) + " · " + label;
       button.addEventListener("click", async () => {
         if (selectGroundingCandidate(index)) {
           setMode("box");
           if (state.agentRunId && state.agentPhase === "needs_choice") {
             await chooseAgentCandidate(index);
           } else {
-            setStatus("已选择候选 " + String(index + 1) + "。可直接生成，或添加正负点细化。", "success");
+            setStatus("已选候选 " + String(index + 1) + "，可生成或加点微调。", "success");
           }
         }
       });
@@ -1040,7 +1069,7 @@
     redraw();
     refreshActions();
     if (!settings.quiet && state.imageId) {
-      setStatus("提示已清空。请在图上添加包含点，或框选一个目标区域。", "");
+      setStatus("提示已清空。请点选或框选主体。", "");
     }
   }
 
@@ -1053,11 +1082,11 @@
       button.setAttribute("aria-pressed", String(selected));
     });
     if (mode === "positive") {
-      modeHelp.textContent = "在目标主体内部点击，放置绿色包含点。";
+      modeHelp.textContent = "点主体内部，添加包含点。";
     } else if (mode === "negative") {
-      modeHelp.textContent = "在不应属于目标的区域点击，放置红色排除点。";
+      modeHelp.textContent = "点要排除的位置。";
     } else {
-      modeHelp.textContent = "围绕目标拖动一个框；框可以和正负点一起使用。";
+      modeHelp.textContent = "拖框圈住目标，可配合点选。";
     }
     canvas.style.cursor = mode === "box" ? "crosshair" : "copy";
   }
@@ -1068,23 +1097,6 @@
       throw new Error(typeof payload.error === "string" ? payload.error : "请求没有成功完成。请稍后再试。");
     }
     return payload;
-  }
-
-  function serverTimingDuration(value, metric) {
-    if (typeof value !== "string" || !metric) {
-      return null;
-    }
-    const escaped = String(metric).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = new RegExp("(?:^|,)\\s*" + escaped + "\\s*;\\s*dur=([0-9.]+)", "i").exec(value);
-    return match ? num(match[1]) : null;
-  }
-
-  function shortDuration(milliseconds) {
-    const value = num(milliseconds);
-    if (value === null || value < 0) {
-      return null;
-    }
-    return value < 1000 ? String(Math.round(value)) + " ms" : (value / 1000).toFixed(1) + " 秒";
   }
 
   function clearLocalPreview() {
@@ -1127,7 +1139,7 @@
         if (token === state.previewToken) {
           displayCanvasImage(image, details.width, details.height);
           if (state.busy) {
-            setStatus("图片预览已显示，正在上传…", "working");
+            setStatus("正在上传图片…", "working");
           }
         }
         resolve(details);
@@ -1185,13 +1197,11 @@
     const form = new FormData();
     form.append("image", file);
     setBusy(true, "upload");
-      setStatus("正在显示预览并上传图片…", "working");
-    const uploadStartedAt = performance.now();
+    setStatus("正在上传图片…", "working");
     const localPreview = beginLocalPreview(file, previewToken);
 
     try {
       const response = await fetch("/api/upload", { method: "POST", body: form });
-      const serverUploadMs = serverTimingDuration(response.headers.get("Server-Timing"), "upload");
       const payload = await readResponse(response);
       const local = await localPreview;
       if (previewToken !== state.previewToken) {
@@ -1212,12 +1222,7 @@
         await loadServerPreview(payload.preview_url || payload.image_url, sourceWidth, sourceHeight, previewToken);
       }
       setBusy(false);
-      const timings = ["本次用时 " + shortDuration(performance.now() - uploadStartedAt)];
-      const serverTiming = shortDuration(serverUploadMs);
-      if (serverTiming) {
-        timings.push("服务器处理 " + serverTiming);
-      }
-      setStatus("图片已载入（" + timings.join("；") + "）。可以一键处理，也可以直接在图上添加提示。", "success");
+      setStatus("图片已上传。可一键处理或手动标注。", "success");
     } catch (error) {
       setBusy(false);
       setStatus(error.message, "error");
@@ -1239,7 +1244,7 @@
     clearQwenBox();
     redraw();
     setBusy(true, "ground");
-    setStatus("正在查找 AI 推荐位置…", "working");
+    setStatus("正在找推荐位置…", "working");
 
     try {
       const response = await fetch("/api/ground", {
@@ -1254,7 +1259,7 @@
       }
       if (!candidates.length) {
         setBusy(false);
-        setStatus(typeof result.note === "string" ? result.note : "没有找到可用候选区域。可以直接手动点选或框选。", "error");
+        setStatus(typeof result.note === "string" ? result.note : "没有找到候选。可手动点选或框选。", "error");
         return;
       }
       if (typeof result.grounding_id !== "string") {
@@ -1272,8 +1277,8 @@
 
       const note = typeof result.note === "string" && result.note ? " " + result.note : "";
       setStatus(candidates.length > 1
-        ? "AI 找到了 " + String(candidates.length) + " 个可能区域，请选择最符合的一项。" + note
-        : "AI 已推荐一个区域。可直接生成选区，或添加正负点细化。" + note, "success");
+        ? "找到 " + String(candidates.length) + " 个候选，请选一个。" + note
+        : "已推荐一个区域。可生成选区或加点微调。" + note, "success");
     } catch (error) {
       setBusy(false);
       setStatus(error.message, "error");
@@ -1294,12 +1299,12 @@
     clearQwenBox();
     state.agentRunId = "pending";
     state.agentPhase = "locating";
-    state.agentMessage = "正在理解你的描述，判断能否直接生成选区，还是需要你确认位置或补充提示。";
+    state.agentMessage = "正在查找主体。";
     state.agentEvaluation = null;
     redraw();
     renderAgentPanel();
     setBusy(true, "agent");
-    setStatus("正在理解你想选取的主体…", "working");
+    setStatus("正在查找主体…", "working");
 
     try {
       const response = await fetch("/api/agent-runs", {
@@ -1339,30 +1344,30 @@
     const phase = run.phase;
     if (phase === "completed") {
       if (!showOneClickSegmentation(run)) {
-        throw new Error("一键剪辑已完成，但没有找到可显示的选区结果。");
+        throw new Error("一键处理已完成，但没有找到可显示的选区结果。");
       }
       syncOneClickPlanToEditor(run.plan);
       await displayEditResult(run.edit);
       setBusy(false);
-      setStatus("一键剪辑已完成；下载会导出原图尺寸 PNG，也可以继续手动微调。", "success");
+      setStatus("处理完成。可下载原图尺寸 PNG，或继续微调。", "success");
       if (editResult) editResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
     if (phase === "needs_input") {
       showOneClickSegmentation(run);
       setBusy(false);
-      setStatus(run.message || "自动结果需要人工确认。你可以改写需求，或继续手动微调。", "error");
+      setStatus(run.message || "请补充需求，或手动编辑。", "error");
       return;
     }
     if (phase === "unsupported") {
       setBusy(false);
-      setStatus(run.message || "这个要求暂时超出当前一键剪辑的能力范围。", "error");
+      setStatus(run.message || "当前不支持这项处理。", "error");
       return;
     }
     if (phase === "failed") {
       showOneClickSegmentation(run);
       setBusy(false);
-      setStatus(run.message || "一键剪辑没有完成。你可以重试或使用手动编辑。", "error");
+      setStatus(run.message || "处理未完成。可重试或手动编辑。", "error");
     }
   }
 
@@ -1409,7 +1414,7 @@
       state.oneClickPollFailures += 1;
       if (state.oneClickPollFailures >= 3) {
         setBusy(false);
-        setStatus("暂时无法读取一键剪辑状态。请稍后刷新页面确认结果。", "error");
+        setStatus("暂时无法读取处理状态。请刷新页面确认结果。", "error");
         return;
       }
       state.oneClickPollTimer = window.setTimeout(pollOneClickRun, pollIntervalMs * state.oneClickPollFailures);
@@ -1422,7 +1427,7 @@
       return;
     }
     if (!description.value.trim()) {
-      setStatus("请用一句话写下你想完成的图片编辑效果。", "error");
+      setStatus("请说明主体和效果。", "error");
       return;
     }
     clearAgentState();
@@ -1431,12 +1436,12 @@
     resetOneClickPoll();
     state.oneClickRunId = "pending";
     state.oneClickPhase = "planning";
-    state.oneClickMessage = "正在把你的需求转换为当前支持的处理步骤。";
+    state.oneClickMessage = "正在准备处理。";
     state.oneClickPlan = null;
     redraw();
     renderOneClickPanel();
     setBusy(true, "one-click");
-    setStatus("正在理解需求、定位主体并生成选区…", "working");
+    setStatus("正在定位主体并生成选区…", "working");
 
     try {
       const response = await fetch("/api/one-click-runs", {
@@ -1465,7 +1470,7 @@
       return;
     }
     setBusy(true, "agent");
-    setStatus("正在确认你选择的区域…", "working");
+    setStatus("正在确认区域…", "working");
     try {
       const response = await fetch("/api/agent-runs/" + encodeURIComponent(state.agentRunId) + "/choose", {
         method: "POST",
@@ -1501,7 +1506,7 @@
     updateJobCard({
       status: job.status || "queued",
       phase: job.phase || "queued",
-      message: job.message || fallbackMessage || "任务已提交，正在等待服务器处理。",
+      message: job.message || fallbackMessage || "已提交，正在处理。",
     });
   }
 
@@ -1515,8 +1520,8 @@
       return;
     }
     setBusy(true, "segment");
-    setStatus("已确认提示，正在生成选区…", "working");
-    updateJobCard({ status: "queued", phase: "queued", message: "正在进入服务器处理队列。" });
+    setStatus("正在生成选区…", "working");
+    updateJobCard({ status: "queued", phase: "queued", message: "正在排队。" });
     try {
       const response = await fetch("/api/agent-runs/" + encodeURIComponent(state.agentRunId) + "/segment", {
         method: "POST",
@@ -1525,7 +1530,7 @@
       });
       const result = await readResponse(response);
       applyAgentRun(result);
-      startTrackingJob(result.job, "任务已提交，正在等待服务器处理。");
+      startTrackingJob(result.job, "已提交，正在处理。");
       await pollJob();
     } catch (error) {
       finishJobWithError(error.message);
@@ -1586,8 +1591,8 @@
     }
 
     setBusy(true, "segment");
-    setStatus("任务已提交。服务器会在后台完成选区生成，页面会持续更新状态。", "working");
-    updateJobCard({ status: "queued", phase: "queued", message: "正在进入服务器处理队列。" });
+    setStatus("已提交，正在生成选区。", "working");
+    updateJobCard({ status: "queued", phase: "queued", message: "正在排队。" });
 
     try {
       const response = await fetch("/api/segment-jobs", {
@@ -1596,7 +1601,7 @@
         body: JSON.stringify(buildSegmentationPayload()),
       });
       const result = await readResponse(response);
-      startTrackingJob(result, "任务已提交，正在等待服务器处理。");
+      startTrackingJob(result, "已提交，正在处理。");
       await pollJob();
     } catch (error) {
       finishJobWithError(error.message);
@@ -1617,22 +1622,22 @@
     const jobStatus = typeof job.status === "string" ? job.status.toLowerCase() : "queued";
     const phase = typeof job.phase === "string" ? job.phase.toLowerCase() : "";
     if (jobStatus === "succeeded") {
-      return { badge: "已完成", title: "选区已经准备好", progress: 100, state: "success" };
+      return { badge: "已完成", title: "选区已生成", progress: 100, state: "success" };
     }
     if (jobStatus === "failed") {
-      return { badge: "未完成", title: "这次任务没有成功", progress: 100, state: "error" };
+      return { badge: "未完成", title: "处理未完成", progress: 100, state: "error" };
     }
     if (jobStatus === "running") {
       const details = {
-        loading_model: { title: "正在准备选区引擎", progress: 30 },
-        encoding_image: { title: "正在编码图片", progress: 48 },
+        loading_model: { title: "正在准备", progress: 30 },
+        encoding_image: { title: "正在处理图片", progress: 48 },
         predicting: { title: "正在生成选区", progress: 68 },
-        rendering: { title: "正在整理结果文件", progress: 86 },
+        rendering: { title: "正在整理结果", progress: 86 },
       };
-      const current = details[phase] || { title: "任务正在运行", progress: 56 };
+      const current = details[phase] || { title: "正在处理", progress: 56 };
       return { badge: "运行中", title: current.title, progress: current.progress, state: "running" };
     }
-    return { badge: "排队中", title: "等待服务器处理", progress: 18, state: "queued" };
+    return { badge: "排队中", title: "等待处理", progress: 18, state: "queued" };
   }
 
   function updateJobCard(job) {
@@ -1640,7 +1645,7 @@
     const phase = typeof job.phase === "string" ? job.phase.toLowerCase() : "";
     const message = typeof job.message === "string" && job.message.trim()
       ? job.message.trim()
-      : phaseCopy[phase] || (meta.state === "queued" ? phaseCopy.queued : "正在更新任务状态。");
+      : phaseCopy[phase] || (meta.state === "queued" ? phaseCopy.queued : "正在更新状态。");
     const elapsed = num(job.elapsed_seconds);
     const localElapsed = state.jobStartedAt ? (Date.now() - state.jobStartedAt) / 1000 : 0;
 
@@ -1887,8 +1892,8 @@
     state.jobStartedAt = null;
     safeSessionRemove(activeJobStorageKey);
     setBusy(false);
-    updateJobCard({ status: "failed", message: message || "任务没有成功完成。" });
-    setStatus(message || "任务没有成功完成。请调整提示后重试。", "error");
+    updateJobCard({ status: "failed", message: message || "处理未完成。" });
+    setStatus(message || "处理未完成。请调整提示后重试。", "error");
   }
 
   function finishJob(job) {
@@ -1909,7 +1914,7 @@
     }
     try {
       displayResult(job);
-      setStatus("选区已经生成。可以下载黑白 Mask、透明轮廓或 JSON。", "success");
+      setStatus("选区已生成。可下载 Mask、轮廓或 JSON。", "success");
       resultSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
       if (state.agentRunId && state.agentRunId !== "pending") {
         void evaluateAgentResult();
@@ -1937,10 +1942,10 @@
     } catch (error) {
       state.pollFailures += 1;
       if (state.pollFailures >= 3) {
-        finishJobWithError("暂时无法读取任务状态。请刷新页面确认任务是否继续运行。 ");
+        finishJobWithError("暂时无法读取任务状态。请刷新页面确认。 ");
         return;
       }
-      updateJobCard({ status: "running", message: "正在重新连接任务状态…" });
+      updateJobCard({ status: "running", message: "正在重连…" });
       state.pollTimer = window.setTimeout(pollJob, pollIntervalMs * state.pollFailures);
     }
   }
@@ -1951,15 +1956,15 @@
       const result = await readResponse(response);
       state.groundingAvailable = Boolean(result.configured || result.ready);
       if (state.groundingAvailable) {
-        groundingStatus.textContent = "AI 自动定位已就绪" + (result.model ? " · " + result.model : "") + "。";
+        groundingStatus.textContent = "自动定位可用。";
         groundingStatus.className = "engine-note engine-note--ready";
       } else {
-        groundingStatus.textContent = "AI 自动定位尚未配置；手动点选和框选仍可使用。";
+        groundingStatus.textContent = "自动定位未配置；仍可点选或框选。";
         groundingStatus.className = "engine-note";
       }
     } catch (_error) {
       state.groundingAvailable = false;
-      groundingStatus.textContent = "暂时无法确认 AI 自动定位状态；手动点选和框选仍可使用。";
+      groundingStatus.textContent = "暂无法确认自动定位；仍可手动选区。";
       groundingStatus.className = "engine-note";
     }
     refreshActions();
@@ -1970,17 +1975,13 @@
       const response = await fetch("/api/runtime/status", { cache: "no-store" });
       const result = await readResponse(response);
       const ready = Boolean(result.ready);
-      const device = typeof result.device === "string" ? result.device.toUpperCase() : "服务器";
-      const model = typeof result.model === "string" && result.model ? result.model : "SAM2";
-      const depth = num(result.queue_depth);
-      const capacity = num(result.queue_capacity);
       runtimeChip.className = "runtime-chip" + (ready ? " runtime-chip--ready" : " runtime-chip--warning");
-      runtimeChip.lastElementChild.textContent = ready ? device + " 处理引擎可用" : "处理引擎未就绪";
-      runtimeDetail.textContent = model + " · " + device + (depth !== null && capacity !== null ? " · 队列 " + String(depth) + "/" + String(capacity) : "");
+      runtimeChip.lastElementChild.textContent = ready ? "服务正常" : "服务暂不可用";
+      runtimeDetail.textContent = ready ? "可用" : "暂不可用";
     } catch (_error) {
       runtimeChip.className = "runtime-chip runtime-chip--warning";
-      runtimeChip.lastElementChild.textContent = "无法读取处理引擎";
-      runtimeDetail.textContent = "运行状态暂不可用";
+      runtimeChip.lastElementChild.textContent = "服务暂不可用";
+      runtimeDetail.textContent = "暂不可用";
     }
   }
 
@@ -1999,7 +2000,7 @@
       state.pollUrl = safePollUrl(job.pollUrl, job.id);
       state.jobStartedAt = num(job.startedAt) || Date.now();
       setBusy(true, "segment");
-      updateJobCard({ status: "running", message: "正在恢复任务状态…" });
+      updateJobCard({ status: "running", message: "正在恢复任务…" });
       pollJob();
     } catch (_error) {
       safeSessionRemove(activeJobStorageKey);
@@ -2026,7 +2027,7 @@
         clearQwenBox();
         redraw();
       }
-      setStatus("目标描述已修改，之前的智能选区结果已失效；需要时请重新分析图片。", "");
+      setStatus("描述已改，请重新分析图片。", "");
     }
     refreshActions();
   });

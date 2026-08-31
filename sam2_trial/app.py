@@ -1262,18 +1262,18 @@ def _one_click_public(run: OneClickRun, record: ImageRecord) -> dict[str, Any]:
 def _one_click_quality_message(record: ImageRecord, job: JobRecord) -> str | None:
     result = job.result if isinstance(job.result, dict) else None
     if result is None:
-        return "选区引擎没有返回可用于一键处理的选区。"
+        return "没有得到可用选区。"
     area = result.get("mask_area_px")
     score = result.get("estimated_iou")
     if not isinstance(area, (int, float)) or area <= 0:
-        return "选区引擎没有生成可用选区。"
+        return "没有得到可用选区。"
     ratio = float(area) / float(record.width * record.height)
     if ratio < AGENT_MIN_MASK_AREA_RATIO:
-        return "自动选区过小，暂不直接套用效果。请改写需求或进入手动编辑。"
+        return "选区太小，未自动处理。请改写需求或手动编辑。"
     if ratio > AGENT_MAX_MASK_AREA_RATIO:
-        return "自动选区覆盖范围过大，暂不直接套用效果。请改写需求或进入手动编辑。"
+        return "选区过大，未自动处理。请改写需求或手动编辑。"
     if isinstance(score, (int, float)) and score < AGENT_REVIEW_IOU:
-        return "自动选区的质量信号偏弱，已保留结果供你手动微调。"
+        return "选区不够可靠，已保留结果供你微调。"
     return None
 
 
@@ -1284,12 +1284,12 @@ def _refresh_one_click_run(run: OneClickRun, record: ImageRecord) -> None:
     job = job_manager.get(run.job_id)
     if job is None or job.owner_id != run.owner_id:
         run.phase = "failed"
-        run.message = "一键剪辑的选区任务已失效，请重新执行。"
+        run.message = "处理任务已失效，请重新执行。"
         _save_one_click_run(run)
         return
     if job.status == "failed":
         run.phase = "failed"
-        run.message = job.error or "选区引擎未能完成本次一键剪辑。"
+        run.message = job.error or "没有完成选区生成。"
         _save_one_click_run(run)
         return
     if job.status != "succeeded":
@@ -1308,13 +1308,13 @@ def _refresh_one_click_run(run: OneClickRun, record: ImageRecord) -> None:
         run.message = quality_message
     else:
         run.phase = "ready_to_apply"
-        run.message = "已得到可靠选区，正在准备应用图片处理效果。"
+        run.message = "选区已就绪，正在处理。"
     _save_one_click_run(run)
 
 
 def _agent_candidate_box(record: ImageRecord, grounding: GroundingRecord, candidate_index: int) -> list[float]:
     if not 0 <= candidate_index < len(grounding.proposal.candidates):
-        raise ValueError("智能选区选择的推荐位置已失效，请重新分析图片。")
+        raise ValueError("推荐位置已失效，请重新分析图片。")
     return grounding.proposal.candidates[candidate_index].absolute_box(record.width, record.height)
 
 
@@ -1322,23 +1322,23 @@ def _require_grounding(grounding_id: Any, image_id: str, description: str | None
     if grounding_id is None:
         return None
     if not isinstance(grounding_id, str) or not IMAGE_ID_RE.fullmatch(grounding_id):
-        raise ValueError("AI 自动定位记录无效，请重新点击 AI 自动定位。")
+        raise ValueError("自动定位记录无效，请重新定位。")
     grounding = _load_grounding(grounding_id)
     if grounding is None:
-        raise ValueError("AI 自动定位记录已失效，请重新点击 AI 自动定位。")
+        raise ValueError("自动定位记录已失效，请重新定位。")
     if grounding.owner_id and grounding.owner_id != _current_owner():
         raise ValueError("自动定位记录不属于当前浏览器。")
     if grounding.image_id != image_id:
         raise ValueError("自动定位记录不属于当前图片。")
     if grounding.description != description:
-        raise ValueError("目标描述已修改，请重新点击 AI 自动定位。")
+        raise ValueError("目标描述已修改，请重新定位。")
     return grounding
 
 
 def _parse_grounding_candidate_index(value: Any, grounding: GroundingRecord | None) -> int | None:
     if grounding is None:
         if value is not None:
-            raise ValueError("当前请求没有可关联的 AI 推荐位置。")
+            raise ValueError("当前请求没有可关联的推荐位置。")
         return None
     if value is None:
         return 0 if grounding.proposal.candidates else None
@@ -2265,13 +2265,13 @@ def _agent_phase_for_proposal(proposal: GroundingProposal) -> tuple[str, str, in
     if candidate_count == 0:
         return (
             "needs_manual_prompt",
-            "我还不能可靠定位这个目标。请在目标主体内加一个包含点，或用框选指出它。",
+            "未能确定目标。请点选主体或框选它。",
             None,
         )
     if proposal.status == "ambiguous" or candidate_count > 1:
         return (
             "needs_choice",
-            f"我找到了 {candidate_count} 个可能的区域。请选择最符合目标的一项，再生成选区。",
+            f"找到 {candidate_count} 个候选，请选一个。",
             None,
         )
     label = proposal.candidates[0].label
@@ -2279,12 +2279,12 @@ def _agent_phase_for_proposal(proposal: GroundingProposal) -> tuple[str, str, in
     if proposal.candidates[0].confidence >= AGENT_AUTO_SEGMENT_CONFIDENCE:
         return (
             "ready_to_segment",
-            f"我较有把握地找到了{label_suffix}。确认后即可生成选区。",
+            f"已找到{label_suffix}，确认后生成选区。",
             0,
         )
     return (
         "needs_confirmation",
-        f"我找到了{label_suffix}。请确认推荐位置，或补充点选/框选后再生成选区。",
+        f"找到{label_suffix}。请确认，或补充点选/框选。",
         0,
     )
 
@@ -2303,7 +2303,7 @@ def _agent_job_public(run: AgentRun) -> dict[str, Any] | None:
 def _evaluate_agent_run(run: AgentRun, record: ImageRecord, job: JobRecord) -> None:
     if job.status == "failed":
         run.phase = "needs_refinement"
-        run.message = "这次选区没有完成。请补充一个包含点、排除点或更紧的框后重试。"
+        run.message = "选区未完成。请加点或收紧框选后重试。"
         run.evaluation = {
             "verdict": "needs_refinement",
             "checks": [{"code": "job_failed", "severity": "warning", "message": job.error or job.message}],
@@ -2321,25 +2321,25 @@ def _evaluate_agent_run(run: AgentRun, record: ImageRecord, job: JobRecord) -> N
     checks: list[dict[str, str]] = []
     needs_refinement = False
     if area_ratio is None or area_ratio <= 0:
-        checks.append({"code": "empty_mask", "severity": "warning", "message": "结果没有可用的 mask 像素。"})
+        checks.append({"code": "empty_mask", "severity": "warning", "message": "没有得到有效选区。"})
         needs_refinement = True
     elif area_ratio > AGENT_MAX_MASK_AREA_RATIO:
-        checks.append({"code": "mask_too_large", "severity": "warning", "message": "选区覆盖了图片的大部分区域，建议加排除点或收紧框选。"})
+        checks.append({"code": "mask_too_large", "severity": "warning", "message": "选区过大，建议加排除点或收紧框选。"})
         needs_refinement = True
     elif area_ratio < AGENT_MIN_MASK_AREA_RATIO:
-        checks.append({"code": "mask_very_small", "severity": "info", "message": "选区很小；若目标本来较小可直接使用，否则请补一个包含点。"})
+        checks.append({"code": "mask_very_small", "severity": "info", "message": "选区较小，请确认边界。"})
 
     if isinstance(score, (int, float)) and score < AGENT_REVIEW_IOU:
-        checks.append({"code": "low_sam2_score", "severity": "info", "message": "选区评分偏弱，建议人工检查边界。"})
+        checks.append({"code": "low_sam2_score", "severity": "info", "message": "边界可能不准，请检查。"})
         needs_refinement = True
 
     bbox = result.get("mask_bbox_xyxy")
     if isinstance(bbox, list) and len(bbox) == 4 and all(isinstance(value, int) for value in bbox):
         if bbox[0] == 0 and bbox[1] == 0 and bbox[2] >= record.width - 1 and bbox[3] >= record.height - 1:
-            checks.append({"code": "mask_touches_all_borders", "severity": "info", "message": "选区触及图片四边，建议确认它没有把背景一起选中。"})
+            checks.append({"code": "mask_touches_all_borders", "severity": "info", "message": "选区触及图片四边，请确认没有选中背景。"})
 
     if not checks:
-        checks.append({"code": "review_complete", "severity": "info", "message": "基础质量检查通过；仍建议按画面效果确认选区。"})
+        checks.append({"code": "review_complete", "severity": "info", "message": "初步检查通过，请确认边界。"})
     run.evaluation = {
         "verdict": "needs_refinement" if needs_refinement else "pass",
         "area_ratio": area_ratio,
@@ -2349,10 +2349,10 @@ def _evaluate_agent_run(run: AgentRun, record: ImageRecord, job: JobRecord) -> N
     }
     if needs_refinement:
         run.phase = "needs_refinement"
-        run.message = "我已生成结果，但质量信号提示可以再细化。你可以加点、排除点或重新框选后再试。"
+        run.message = "已生成选区，建议加点或重新框选微调。"
     else:
         run.phase = "completed"
-        run.message = "我已完成选区和基础质量复核。请按画面效果确认后下载结果。"
+        run.message = "选区已检查，请确认后下载。"
     _save_agent_run(run)
 
 
@@ -2384,15 +2384,15 @@ def ground() -> Any:
     except ValueError as error:
         return _json_error(str(error), 400)
     if not grounder.configured:
-        return _json_error("未配置 DASHSCOPE_API_KEY。手动点选和框选仍可使用。", 503)
+        return _json_error("自动定位未配置；仍可手动选区。", 503)
     try:
         grounding_record = _create_grounding_record(record, description, owner_id)
     except GroundingError as error:
         app.logger.warning("Qwen grounding failed: %s", error)
-        return _json_error(str(error), 502)
+        return _json_error("自动定位暂不可用，请稍后重试或手动选区。", 502)
     except Exception:
         app.logger.exception("Unexpected Qwen grounding error")
-        return _json_error("AI 自动定位失败，请稍后重试或使用手动提示。", 502)
+        return _json_error("自动定位失败，请稍后重试或手动选区。", 502)
     public = grounding_record.as_metadata(record.width, record.height)
     return jsonify({"grounding_id": grounding_record.grounding_id, "status": public["status"], "note": public["note"], "model": public["model"], "candidate": public["candidate"], "candidates": public["candidates"]}), 200
 
@@ -2423,10 +2423,10 @@ def create_agent_run() -> Any:
         created_at=_utc_now(),
         expires_at=record.expires_at,
         phase="needs_manual_prompt",
-        message="请在目标主体内加一个包含点，或用框选指出它。",
+        message="请点选主体或框选它。",
     )
     if not grounder.configured:
-        run.message = "AI 自动定位尚未配置。你仍可使用包含点或框选来生成选区。"
+        run.message = "自动定位未配置；仍可点选或框选。"
     else:
         try:
             grounding_record = _create_grounding_record(record, description, owner_id)
@@ -2437,10 +2437,10 @@ def create_agent_run() -> Any:
             run.selected_candidate_index = selected_index
         except GroundingError as error:
             app.logger.warning("Agent grounding failed: %s", error)
-            run.message = "自动定位暂时不可用。请在目标主体内加一个包含点，或用框选指出它。"
+            run.message = "自动定位暂不可用。请点选主体或框选它。"
         except Exception:
             app.logger.exception("Unexpected agent grounding failure")
-            run.message = "自动定位暂时不可用。请在目标主体内加一个包含点，或用框选指出它。"
+            run.message = "自动定位暂不可用。请点选主体或框选它。"
     _save_agent_run(run)
     _record_metric("agent_run", owner_id=owner_id, status=run.phase)
     return jsonify(_agent_public(run, record)), 201
@@ -2453,7 +2453,7 @@ def agent_run_status(agent_id: str) -> Any:
     job = job_manager.get(run.job_id) if run.job_id else None
     if run.phase == "segmenting" and job is not None and job.status in {"succeeded", "failed"}:
         run.phase = "awaiting_evaluation"
-        run.message = "选区已生成。可以等待自动复核，或直接按画面效果检查。"
+        run.message = "选区已生成，可直接检查或等待复核。"
         _save_agent_run(run)
     public = _agent_public(run, record)
     public["job"] = _agent_job_public(run)
@@ -2465,7 +2465,7 @@ def choose_agent_candidate(agent_id: str) -> Any:
     run = _require_agent_run(agent_id)
     record = _require_record(run.image_id)
     if run.phase not in {"needs_choice", "needs_confirmation", "needs_refinement"}:
-        return _json_error("当前智能选区状态不需要选择推荐位置。", 409)
+        return _json_error("当前状态不需要选择推荐位置。", 409)
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return _json_error("请提交 JSON 请求。", 400)
@@ -2474,12 +2474,12 @@ def choose_agent_candidate(agent_id: str) -> Any:
         return _json_error("候选框序号必须是整数。", 400)
     grounding = _load_grounding(run.grounding_id) if run.grounding_id else None
     if grounding is None or grounding.owner_id != run.owner_id or grounding.image_id != run.image_id:
-        return _json_error("智能选区的推荐位置已失效，请重新分析图片。", 409)
+        return _json_error("推荐位置已失效，请重新分析图片。", 409)
     if not 0 <= candidate_index < len(grounding.proposal.candidates):
         return _json_error("候选框序号超出范围。", 400)
     run.selected_candidate_index = candidate_index
     run.phase = "ready_to_segment"
-    run.message = f"已确认候选 {candidate_index + 1}。我会结合这个位置和你的额外点选生成选区。"
+    run.message = f"已确认候选 {candidate_index + 1}。可直接生成，也可加点微调。"
     _save_agent_run(run)
     return jsonify(_agent_public(run, record))
 
@@ -2493,7 +2493,7 @@ def segment_agent_run(agent_id: str) -> Any:
     run = _require_agent_run(agent_id)
     record = _require_record(run.image_id)
     if run.phase not in {"needs_confirmation", "needs_manual_prompt", "ready_to_segment", "needs_refinement"}:
-        return _json_error("当前智能选区不能提交选区任务。", 409)
+        return _json_error("当前状态不能提交选区任务。", 409)
     payload = request.get_json(silent=True)
     if payload is None:
         payload = {}
@@ -2507,7 +2507,7 @@ def segment_agent_run(agent_id: str) -> Any:
         grounding_id: str | None = None
         if grounding is not None and candidate_index is not None:
             if grounding.owner_id != owner_id or grounding.image_id != record.image_id or grounding.description != run.description:
-                raise ValueError("智能选区的推荐位置已失效，请重新分析图片。")
+                raise ValueError("推荐位置已失效，请重新分析图片。")
             agent_box = _agent_candidate_box(record, grounding, candidate_index)
             grounding_id = grounding.grounding_id
         job_payload = {
@@ -2529,7 +2529,7 @@ def segment_agent_run(agent_id: str) -> Any:
         return _json_error("服务器任务队列已满，请等待一个任务完成后再试。", 503, 5)
     run.job_id = job.job_id
     run.phase = "segmenting"
-    run.message = "已收到你的提示，正在生成精确选区。"
+    run.message = "正在生成选区。"
     run.attempts += 1
     run.evaluation = None
     _save_agent_run(run)
@@ -2543,7 +2543,7 @@ def evaluate_agent_run(agent_id: str) -> Any:
     run = _require_agent_run(agent_id)
     record = _require_record(run.image_id)
     if not run.job_id:
-        return _json_error("智能选区还没有可以复核的选区任务。", 409)
+        return _json_error("还没有可复核的选区任务。", 409)
     job = job_manager.get(run.job_id)
     if job is None or job.owner_id != run.owner_id:
         abort(404)
@@ -2593,7 +2593,7 @@ def create_one_click_run() -> Any:
         record = _require_record(payload.get("image_id"))
         instruction = _parse_description(payload.get("instruction"))
         if instruction is None:
-            raise ValueError("请写下你想完成的图片编辑效果。")
+            raise ValueError("请说明主体和效果。")
     except ValueError as error:
         return _json_error(str(error), 400)
 
@@ -2605,11 +2605,11 @@ def create_one_click_run() -> Any:
         created_at=_utc_now(),
         expires_at=record.expires_at,
         phase="planning",
-        message="正在理解你的图片处理需求。",
+        message="正在准备处理。",
     )
     if not edit_planner.configured or not grounder.configured:
         run.phase = "failed"
-        run.message = "智能理解尚未配置；你仍可使用下方的手动选区和选区编辑。"
+        run.message = "一键处理未配置；可用手动编辑。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
@@ -2619,14 +2619,14 @@ def create_one_click_run() -> Any:
     except GroundingError as error:
         app.logger.warning("One-click edit planning failed: %s", error)
         run.phase = "failed"
-        run.message = "暂时无法理解这次需求。图片和文字已暂存，请稍后重试或使用手动编辑。"
+        run.message = "暂时无法处理，可重试或手动编辑。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
     except Exception:
         app.logger.exception("Unexpected one-click edit planning failure")
         run.phase = "failed"
-        run.message = "智能剪辑暂时不可用。图片和文字已保留，你可以使用手动编辑。"
+        run.message = "一键处理暂不可用，可用手动编辑。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
@@ -2634,13 +2634,13 @@ def create_one_click_run() -> Any:
     run.plan = plan.as_storage()
     if plan.status == "unsupported":
         run.phase = "unsupported"
-        run.message = plan.summary
+        run.message = "当前不支持这项处理。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
     if plan.status != "ready" or not plan.target or not _one_click_has_visible_effect(plan):
         run.phase = "needs_input"
-        run.message = plan.summary if plan.status == "needs_input" else "我还需要一个明确的主体和编辑效果，例如“保留左边的人，背景虚化并提亮”。"
+        run.message = "请说明主体和效果，例如“保留左边的人，背景虚化”。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
@@ -2650,7 +2650,7 @@ def create_one_click_run() -> Any:
         selected_index = _select_one_click_candidate(grounding.proposal)
         if selected_index is None:
             run.phase = "needs_input"
-            run.message = f"我理解了你的效果，但没有可靠定位到「{plan.target}」。请把主体描述得更具体，或改用手动编辑。"
+            run.message = f"未能定位「{plan.target}」。请描述得更具体，或手动编辑。"
             _save_one_click_run(run)
             _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
             return jsonify(_one_click_public(run, record)), 201
@@ -2672,7 +2672,7 @@ def create_one_click_run() -> Any:
     except GroundingError as error:
         app.logger.warning("One-click grounding failed: %s", error)
         run.phase = "failed"
-        run.message = "暂时无法定位要编辑的主体。图片和需求已暂存，请稍后重试或使用手动编辑。"
+        run.message = "未能定位主体，可重试或手动编辑。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
@@ -2689,7 +2689,7 @@ def create_one_click_run() -> Any:
     run.selected_candidate_index = selected_index
     run.job_id = job.job_id
     run.phase = "segmenting"
-    run.message = f"已自动选择「{selected_label}」，正在生成精确选区。"
+    run.message = f"已选「{selected_label}」，正在生成选区。"
     _save_one_click_run(run)
     _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
     public = _one_click_public(run, record)
@@ -2714,16 +2714,16 @@ def apply_one_click_run(run_id: str) -> Any:
         record = _require_record(run.image_id)
         _refresh_one_click_run(run, record)
         if run.phase != "ready_to_apply":
-            return _json_error("当前一键剪辑还不能合成结果。", 409)
+            return _json_error("当前还不能生成结果。", 409)
         plan = _one_click_plan(run)
         if plan is None or plan.status != "ready" or run.result_id is None:
             run.phase = "failed"
-            run.message = "一键剪辑计划已失效，请重新执行。"
+            run.message = "处理计划已失效，请重新执行。"
             _save_one_click_run(run)
             return _json_error(run.message, 409)
         result_dir = _require_owned_result(run.result_id, record)
         run.phase = "composing"
-        run.message = "正在按原图尺寸合成一键剪辑结果。"
+        run.message = "正在生成原图尺寸结果。"
         _save_one_click_run(run)
         try:
             edit = _render_local_edit(record, result_dir, plan.as_edit_settings())
@@ -2736,13 +2736,13 @@ def apply_one_click_run(run_id: str) -> Any:
         except Exception:
             app.logger.exception("Unexpected one-click composition failure")
             run.phase = "failed"
-            run.message = "服务器合成一键剪辑结果时出现问题，请重新执行或使用手动编辑。"
+            run.message = "生成结果失败。请重试或手动编辑。"
             _save_one_click_run(run)
             _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
             return _json_error(run.message, 502)
         run.edit = edit
         run.phase = "completed"
-        run.message = plan.summary
+        run.message = "处理完成。"
         _save_one_click_run(run)
 
     _record_metric("one_click_edit", owner_id=owner_id, status="completed", duration_ms=(time.perf_counter() - started_at) * 1000)

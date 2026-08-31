@@ -31,9 +31,8 @@
     <main id="ops-main" class="ops-shell">
       <section class="page-intro" aria-labelledby="page-title">
         <div>
-          <p class="eyebrow">PRIVATE OPERATIONS VIEW</p>
-          <h1 id="page-title">看清真实使用，<br>也看清等待发生在哪。</h1>
-          <p>统计窗口内的访问、分割与推理耗时。数据会在刷新时重新读取，不保存用户的图片或输入内容。</p>
+          <h1 id="page-title">使用与耗时</h1>
+          <p>查看访问、任务和耗时。不记录图片或输入内容。</p>
         </div>
         <aside class="privacy-card">
           <span class="privacy-card__icon" aria-hidden="true">⌁</span>
@@ -48,8 +47,8 @@
         <div class="auth-card__copy">
           <span class="section-index">01</span>
           <div>
-            <h2 id="auth-title">连接运营数据</h2>
-            <p>输入运营访问令牌后，即可读取汇总指标。令牌不会写入服务器日志或永久存储。</p>
+            <h2 id="auth-title">读取运营数据</h2>
+            <p>输入访问令牌后读取汇总数据。令牌只保存在本次浏览中。</p>
           </div>
         </div>
         <form id="token-form" class="token-form" novalidate>
@@ -83,7 +82,6 @@
       <section class="summary-section" aria-labelledby="summary-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">USAGE SNAPSHOT</p>
             <h2 id="summary-title">使用概览</h2>
           </div>
           <p id="window-copy" class="window-copy">选择时间范围后显示汇总</p>
@@ -111,12 +109,12 @@
             <p id="metric-segment-note">等待数据</p>
           </article>
           <article class="metric-card metric-card--warm">
-            <span class="metric-card__label">Qwen 定位</span>
+            <span class="metric-card__label">自动定位</span>
             <strong id="metric-qwen" class="metric-card__value">—</strong>
             <p>自动语义定位请求</p>
           </article>
           <article class="metric-card metric-card--warm">
-            <span class="metric-card__label">Agent 运行</span>
+            <span class="metric-card__label">自动选区</span>
             <strong id="metric-agent" class="metric-card__value">—</strong>
             <p>引导式分割流程</p>
           </article>
@@ -126,10 +124,9 @@
       <section class="timing-section" aria-labelledby="timing-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">LATENCY BREAKDOWN</p>
             <h2 id="timing-title">速度与等待</h2>
           </div>
-          <p class="timing-note">耗时以服务端记录为准；P90 表示 90% 的请求不超过该时长。</p>
+          <p class="timing-note">耗时以服务端记录为准；P90 表示较慢的 10% 请求。</p>
         </div>
 
         <div class="timing-grid" aria-live="polite">
@@ -143,7 +140,7 @@
             <p>图片到达服务器后的解码、保存与预览生成；不含网络传输。</p>
           </article>
           <article class="timing-card">
-            <div class="timing-card__head"><span class="timing-dot timing-dot--blue" aria-hidden="true"></span><h3>Qwen 定位</h3></div>
+            <div class="timing-card__head"><span class="timing-dot timing-dot--blue" aria-hidden="true"></span><h3>自动定位</h3></div>
             <dl>
               <div><dt>中位数</dt><dd id="qwen-median">—</dd></div>
               <div><dt>P90</dt><dd id="qwen-p90">—</dd></div>
@@ -184,7 +181,6 @@
       <section class="events-section" aria-labelledby="events-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">RECENT ACTIVITY</p>
             <h2 id="events-title">最近活动</h2>
           </div>
           <p class="events-note">不显示图片、描述或其他用户内容。</p>
@@ -197,7 +193,7 @@
     </main>
 
     <footer class="footer">
-      <span>AutoSEM · Private Operations</span>
+      <span>AutoSEM · 运营概览</span>
       <a href="/privacy">隐私说明</a>
     </footer>
     <script src="{{ url_for('static', filename='ops.js', v=static_version) }}"></script>

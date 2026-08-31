@@ -19,44 +19,36 @@
     <main class="document-shell">
       <aside class="document-toc" aria-label="本页目录">
         <span>隐私说明</span>
-        <a href="#local">服务器内处理</a>
-        <a href="#cloud">云端定位</a>
-        <a href="#storage">结果文件</a>
-        <a href="#keys">密钥与配置</a>
+        <a href="#local">服务器处理</a>
+        <a href="#cloud">模型服务</a>
+        <a href="#storage">保存时间</a>
       </aside>
       <article class="document-content privacy-content">
-        <p class="eyebrow">DATA BOUNDARIES</p>
-        <h1>你的图片，<br>清楚地知道去了哪里。</h1>
-        <p class="document-lead">AutoSEM 的图片处理不在浏览器里完成：上传后的图片会暂存在运行 AutoSEM 的服务器。只有你主动使用智能功能时，图片和文字才会额外发送到已配置的视觉模型服务。</p>
+        <h1>图片如何处理。</h1>
+        <p class="document-lead">图片和结果会暂存在 AutoSEM 服务器。只有使用自动功能时，图片和描述才会发送给模型服务。</p>
 
         <section id="local">
           <span class="content-step">01</span>
-          <h2>AutoSEM 服务器内处理</h2>
-          <p>上传图片、手动点选和框选、选区生成、图片合成和结果导出，均在运行 AutoSEM 的服务器内处理。仅使用手动提示时，图片不会因选区生成而发送到额外的云端视觉模型。</p>
+          <h2>服务器处理</h2>
+          <p>上传后的图片、选区生成、合成和导出都在 AutoSEM 服务器完成。只用手动提示时，图片不会发送给模型服务。</p>
         </section>
 
         <section id="cloud">
           <span class="content-step">02</span>
-          <h2>云端定位是按需触发的</h2>
-          <p>当你点击“一键剪辑”、“查看 AI 推荐位置”或“智能选区（可确认）”时，当前图片和输入文字会发送给已配置的 Qwen 视觉模型服务，用于理解需求和定位主体。该模型不会直接生成、替换或改写图片；最终选区、合成和导出仍由 AutoSEM 服务器完成。未点击这些功能时，系统不会自动发送图片。</p>
-          <div class="guide-note"><strong>请注意</strong><span>云端模型服务对数据的处理方式由该服务及你的账号配置决定。处理敏感图片前，请先确认其服务条款与权限设置。</span></div>
+          <h2>模型服务</h2>
+          <p>点击“一键处理”“查看推荐位置”或“自动选区”时，图片和描述会发送给已配置的 Qwen 视觉模型服务，用于理解需求和定位主体。它不会直接修改图片。</p>
+          <div class="guide-note"><strong>敏感图片</strong><span>请先确认模型服务的条款和账号权限。</span></div>
         </section>
 
         <section id="storage">
           <span class="content-step">03</span>
-          <h2>结果文件与保留</h2>
-          <p>为了让你下载结果，系统会在服务器任务目录中保存上传图片和生成文件。当前默认保留 72 小时，过期后自动清理；同一任务的下载链接仅对创建该任务的浏览器会话有效。请不要分享包含敏感图片的下载链接。</p>
-        </section>
-
-        <section id="keys">
-          <span class="content-step">04</span>
-          <h2>密钥与配置</h2>
-          <p>视觉模型服务的 API Key 仅保存在服务器环境变量或密钥管理系统中，不会出现在网页、下载文件或公开仓库。请勿把 API Key 写入前端代码、截图或公开内容。</p>
+          <h2>保存时间</h2>
+          <p>上传图片和结果默认保留 72 小时，之后自动清理。下载链接仅限创建任务时所用的浏览器访问；不要分享敏感图片的链接。</p>
           <a class="button button--primary" href="/workspace">回到工作台 <span aria-hidden="true">→</span></a>
         </section>
       </article>
     </main>
 
-    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>先自动选区，再按你的判断完成图片处理。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/guide">使用指南</a></div></footer>
+    <footer class="site-footer"><div><a class="brand brand--footer" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>AutoSEM</span></a><p>图片选区和背景处理。</p></div><div class="footer-links"><a href="/workspace">工作台</a><a href="/guide">使用指南</a></div></footer>
   </body>
 </html>

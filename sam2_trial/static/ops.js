@@ -165,11 +165,11 @@
       image_upload: "图片上传",
       segment_job: "分割任务",
       segment_complete: "分割完成",
-      grounding: "Qwen 定位",
-      qwen_request: "Qwen 定位",
-      qwen_grounding: "Qwen 定位",
-      agent_run: "Agent 流程启动",
-      agent_complete: "Agent 流程完成",
+      grounding: "自动定位",
+      qwen_request: "自动定位",
+      qwen_grounding: "自动定位",
+      agent_run: "自动选区已开始",
+      agent_complete: "自动选区完成",
     };
     return map[type] || (type ? type.replaceAll("_", " ") : "匿名事件");
   }
