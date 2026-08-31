@@ -45,9 +45,12 @@ class _Grounder:
     def __init__(self, confidence: float = 0.91) -> None:
         self.calls: list[str] = []
         self.confidence = confidence
+        self.proposal: GroundingProposal | None = None
 
     def ground(self, _image_rgb, description: str) -> GroundingProposal:
         self.calls.append(description)
+        if self.proposal is not None:
+            return self.proposal
         return GroundingProposal(
             "found",
             (GroundingCandidate(100, 100, 900, 900, self.confidence, "cup"),),
@@ -191,7 +194,7 @@ class OneClickEditApiTests(unittest.TestCase):
         self.assertIsNone(run["job"])
         self.assertEqual(self.engine.calls, [])
 
-    def test_low_confidence_location_requires_manual_follow_up(self) -> None:
+    def test_low_confidence_location_requires_target_confirmation(self) -> None:
         self.grounder.confidence = 0.4
         uploaded = self._upload()
         response = self.client.post(
@@ -200,9 +203,49 @@ class OneClickEditApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201)
         run = response.get_json()
-        self.assertEqual(run["phase"], "needs_input")
+        self.assertEqual(run["phase"], "needs_target_confirmation")
         self.assertIsNone(run["job"])
         self.assertEqual(self.engine.calls, [])
+        self.assertEqual(len(run["candidates"]), 1)
+
+        selected = self.client.post(
+            f"/api/one-click-runs/{run['run_id']}/choose",
+            json={"candidate_index": 0},
+        )
+        self.assertEqual(selected.status_code, 202)
+        self.assertEqual(selected.get_json()["phase"], "segmenting")
+        ready = self._wait_until_ready(run["run_id"])
+        self.assertEqual(ready["phase"], "ready_to_apply")
+
+    def test_multiple_locations_require_a_choice_before_sam2(self) -> None:
+        self.grounder.proposal = GroundingProposal(
+            "ambiguous",
+            (
+                GroundingCandidate(80, 100, 410, 900, 0.93, "left cup"),
+                GroundingCandidate(590, 100, 920, 900, 0.89, "right cup"),
+            ),
+            "two cups",
+        )
+        uploaded = self._upload()
+        response = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "保留杯子，背景透明"},
+        )
+        self.assertEqual(response.status_code, 201)
+        run = response.get_json()
+        self.assertEqual(run["phase"], "needs_target_confirmation")
+        self.assertEqual([candidate["label"] for candidate in run["candidates"]], ["left cup", "right cup"])
+        self.assertIsNone(run["selected_candidate"])
+        self.assertEqual(self.engine.calls, [])
+
+        selected = self.client.post(
+            f"/api/one-click-runs/{run['run_id']}/choose",
+            json={"candidate_index": 1},
+        )
+        self.assertEqual(selected.status_code, 202)
+        self.assertEqual(selected.get_json()["selected_candidate"]["label"], "right cup")
+        ready = self._wait_until_ready(run["run_id"])
+        self.assertEqual(ready["phase"], "ready_to_apply")
 
     def test_one_click_run_is_private_to_its_browser_session(self) -> None:
         uploaded = self._upload()

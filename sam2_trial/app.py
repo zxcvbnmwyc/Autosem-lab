@@ -574,6 +574,7 @@ AGENT_PHASES = {
 }
 ONE_CLICK_PHASES = {
     "planning",
+    "needs_target_confirmation",
     "segmenting",
     "ready_to_apply",
     "composing",
@@ -1229,6 +1230,36 @@ def _one_click_selected_candidate(run: OneClickRun, record: ImageRecord) -> dict
     return grounding.proposal.candidates[run.selected_candidate_index].as_metadata(record.width, record.height)
 
 
+def _one_click_candidates(run: OneClickRun, record: ImageRecord) -> list[dict[str, Any]]:
+    """Expose only owned, normalized candidates for an explicit user choice."""
+    if run.grounding_id is None:
+        return []
+    grounding = _load_grounding(run.grounding_id)
+    if (
+        grounding is None
+        or grounding.owner_id != run.owner_id
+        or grounding.image_id != record.image_id
+    ):
+        return []
+    return [
+        candidate.as_metadata(record.width, record.height)
+        for candidate in grounding.proposal.candidates
+    ]
+
+
+def _one_click_grounding_note(run: OneClickRun, record: ImageRecord) -> str | None:
+    if run.grounding_id is None:
+        return None
+    grounding = _load_grounding(run.grounding_id)
+    if (
+        grounding is None
+        or grounding.owner_id != run.owner_id
+        or grounding.image_id != record.image_id
+    ):
+        return None
+    return grounding.proposal.note
+
+
 def _one_click_job_public(run: OneClickRun) -> dict[str, Any] | None:
     if run.job_id is None:
         return None
@@ -1251,6 +1282,8 @@ def _one_click_public(run: OneClickRun, record: ImageRecord) -> dict[str, Any]:
         "created_at": run.created_at,
         "plan": plan.as_storage() if plan is not None else None,
         "grounding_id": run.grounding_id,
+        "grounding_note": _one_click_grounding_note(run, record),
+        "candidates": _one_click_candidates(run, record),
         "selected_candidate_index": run.selected_candidate_index,
         "selected_candidate": _one_click_selected_candidate(run, record),
         "job": _one_click_job_public(run),
@@ -2569,13 +2602,48 @@ def _one_click_has_visible_effect(plan: OneClickEditPlan) -> bool:
 
 
 def _select_one_click_candidate(proposal: GroundingProposal) -> int | None:
-    if not proposal.candidates:
+    """Auto-select only a single high-confidence, unambiguous object."""
+    if proposal.status == "ambiguous" or len(proposal.candidates) != 1:
         return None
-    index, candidate = max(
-        enumerate(proposal.candidates),
-        key=lambda item: (item[1].confidence, -item[0]),
+    return 0 if proposal.candidates[0].confidence >= ONE_CLICK_MIN_GROUNDING_CONFIDENCE else None
+
+
+def _one_click_choice_message(proposal: GroundingProposal, target: str) -> str:
+    if len(proposal.candidates) > 1 or proposal.status == "ambiguous":
+        return f"找到 {len(proposal.candidates)} 个「{target}」候选，请确认要保留哪一个。"
+    candidate = proposal.candidates[0]
+    label = candidate.label or target
+    return f"已找到「{label}」，但定位不够确定。请确认后再生成选区。"
+
+
+def _enqueue_one_click_segmentation(
+    run: OneClickRun,
+    record: ImageRecord,
+    grounding: GroundingRecord,
+    candidate_index: int,
+) -> JobRecord:
+    """Queue SAM2 from a server-owned Qwen candidate after a deliberate choice."""
+    agent_box = _agent_candidate_box(record, grounding, candidate_index)
+    prompt = _serialize_prompt(
+        record,
+        {
+            "image_id": record.image_id,
+            "description": grounding.description,
+            "points": [],
+            "box": agent_box,
+            "grounding_id": grounding.grounding_id,
+            "grounding_candidate_index": candidate_index,
+        },
     )
-    return index if candidate.confidence >= ONE_CLICK_MIN_GROUNDING_CONFIDENCE else None
+    job = _enqueue_segment_job(record, run.owner_id, prompt)
+    selected = grounding.proposal.candidates[candidate_index]
+    plan = _one_click_plan(run)
+    label = selected.label or (plan.target if plan is not None and plan.target else grounding.description)
+    run.selected_candidate_index = candidate_index
+    run.job_id = job.job_id
+    run.phase = "segmenting"
+    run.message = f"已选「{label}」，正在生成选区。"
+    return job
 
 
 @app.post("/api/one-click-runs")
@@ -2648,24 +2716,18 @@ def create_one_click_run() -> Any:
     try:
         grounding = _create_grounding_record(record, plan.target, owner_id)
         selected_index = _select_one_click_candidate(grounding.proposal)
+        run.grounding_id = grounding.grounding_id
         if selected_index is None:
-            run.phase = "needs_input"
-            run.message = f"未能定位「{plan.target}」。请描述得更具体，或手动编辑。"
+            if not grounding.proposal.candidates:
+                run.phase = "needs_input"
+                run.message = f"未能定位「{plan.target}」。请描述得更具体，或手动编辑。"
+            else:
+                run.phase = "needs_target_confirmation"
+                run.message = _one_click_choice_message(grounding.proposal, plan.target)
             _save_one_click_run(run)
             _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
             return jsonify(_one_click_public(run, record)), 201
-        prompt = _serialize_prompt(
-            record,
-            {
-                "image_id": record.image_id,
-                "description": plan.target,
-                "points": [],
-                "box": _agent_candidate_box(record, grounding, selected_index),
-                "grounding_id": grounding.grounding_id,
-                "grounding_candidate_index": selected_index,
-            },
-        )
-        job = _enqueue_segment_job(record, owner_id, prompt)
+        _enqueue_one_click_segmentation(run, record, grounding, selected_index)
     except queue.Full:
         _record_metric("one_click_edit", owner_id=owner_id, status="queue_full", duration_ms=(time.perf_counter() - started_at) * 1000)
         return _json_error("服务器任务队列已满，请等待一个任务完成后再试。", 503, 5)
@@ -2683,13 +2745,6 @@ def create_one_click_run() -> Any:
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
 
-    selected = grounding.proposal.candidates[selected_index]
-    selected_label = selected.label or plan.target
-    run.grounding_id = grounding.grounding_id
-    run.selected_candidate_index = selected_index
-    run.job_id = job.job_id
-    run.phase = "segmenting"
-    run.message = f"已选「{selected_label}」，正在生成选区。"
     _save_one_click_run(run)
     _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
     public = _one_click_public(run, record)
@@ -2702,6 +2757,45 @@ def one_click_run_status(run_id: str) -> Any:
     record = _require_record(run.image_id)
     _refresh_one_click_run(run, record)
     return jsonify(_one_click_public(run, record))
+
+
+@app.post("/api/one-click-runs/<run_id>/choose")
+def choose_one_click_candidate(run_id: str) -> Any:
+    """Queue SAM2 only after the user confirms an ambiguous one-click target."""
+    started_at = time.perf_counter()
+    run = _require_one_click_run(run_id)
+    record = _require_record(run.image_id)
+    if run.phase != "needs_target_confirmation" or run.grounding_id is None:
+        return _json_error("当前没有需要确认的对象。", 409)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error("请提交 JSON 请求。", 400)
+    candidate_index = payload.get("candidate_index")
+    if isinstance(candidate_index, bool) or not isinstance(candidate_index, int):
+        return _json_error("候选对象编号不正确。", 400)
+    grounding = _load_grounding(run.grounding_id)
+    if (
+        grounding is None
+        or grounding.owner_id != run.owner_id
+        or grounding.image_id != record.image_id
+        or not 0 <= candidate_index < len(grounding.proposal.candidates)
+    ):
+        return _json_error("候选对象已失效，请重新处理。", 409)
+    try:
+        _enqueue_one_click_segmentation(run, record, grounding, candidate_index)
+    except queue.Full:
+        _record_metric("one_click_edit", owner_id=run.owner_id, status="queue_full", duration_ms=(time.perf_counter() - started_at) * 1000)
+        return _json_error("服务器任务队列已满，请等待一个任务完成后再试。", 503, 5)
+    except ValueError as error:
+        run.phase = "failed"
+        run.message = str(error)
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=run.owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return _json_error(run.message, 400)
+
+    _save_one_click_run(run)
+    _record_metric("one_click_edit", owner_id=run.owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+    return jsonify(_one_click_public(run, record)), 202
 
 
 @app.post("/api/one-click-runs/<run_id>/apply")

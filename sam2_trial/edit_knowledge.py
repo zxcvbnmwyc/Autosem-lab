@@ -21,7 +21,7 @@ CATALOG_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$")
 CARD_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
 MAX_CARD_RULE_CHARS = 480
 MAX_ALIAS_CHARS = 80
-MAX_ALIASES_PER_CARD = 24
+MAX_ALIASES_PER_CARD = 32
 MAX_RETRIEVAL_LIMIT = 6
 
 # These are intentionally hard-coded.  A catalog can describe an existing

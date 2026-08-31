@@ -20,7 +20,7 @@ class EditingKnowledgeTests(unittest.TestCase):
             {"background.transparent", "subject.brightness"},
         )
         payload = retrieval.as_prompt_data()
-        self.assertEqual(payload["catalog_version"], "2026-08-31")
+        self.assertEqual(payload["catalog_version"], "2026-08-31.2")
         self.assertTrue(
             {"subject.single_visible", "policy.non_generative", "response.contract"}
             .issubset({card["id"] for card in payload["retrieved_capabilities"]})
@@ -44,6 +44,28 @@ class EditingKnowledgeTests(unittest.TestCase):
     def test_subject_becomes_white_does_not_imply_a_background_change(self) -> None:
         retrieval = retrieve_editing_knowledge("把奶酪变白")
         self.assertNotIn("background.color", retrieval.matched_operation_ids)
+
+    def test_parameterised_background_colour_still_retrieves_solid_colour(self) -> None:
+        retrieval = retrieve_editing_knowledge("保留杯子，背景换成红色")
+        self.assertIn("background.color", retrieval.matched_operation_ids)
+
+    def test_focus_subject_shorthand_retrieves_the_visible_recipe(self) -> None:
+        retrieval = retrieve_editing_knowledge("让这个商品更显眼")
+        self.assertEqual(
+            set(retrieval.matched_operation_ids),
+            {"background.blur", "subject.brightness"},
+        )
+        plan = OneClickEditPlan(
+            status="ready",
+            target="商品",
+            selection={"edge_offset": 0, "feather_px": 0, "cleanup": True},
+            background={"mode": "blur", "color": "#ffffff", "blur_px": 18},
+            subject={"brightness": 8, "saturation": 0, "blur_px": 0},
+            summary="突出商品。",
+        )
+        safe_plan = _constrain_plan_to_retrieved_capabilities(plan, retrieval)
+        self.assertEqual(safe_plan.background["mode"], "blur")
+        self.assertEqual(safe_plan.subject["brightness"], 8)
 
     def test_catalog_change_updates_retrieval_without_code_change(self) -> None:
         source = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))

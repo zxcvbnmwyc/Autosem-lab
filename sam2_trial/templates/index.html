@@ -32,13 +32,48 @@
     <main id="workspace" class="workspace-layout">
       <section class="workspace-intro" aria-labelledby="workspace-title">
         <div>
-          <h1 id="workspace-title">选出主体，处理背景。</h1>
-          <p>说明要保留什么。自动选区后，还能继续手动修边。</p>
+          <h1 id="workspace-title">为一个主体做一件事。</h1>
+          <p>说明要保留的对象和想要的效果。先看选区与方案，再生成预览。</p>
         </div>
         <aside class="privacy-note">
           <strong>数据说明</strong>
           <span>使用自动功能时，图片和描述会发送给模型服务。</span>
         </aside>
+      </section>
+
+      <section id="process-hub" class="process-hub process-hub--idle" aria-label="处理进程" aria-live="polite">
+        <div class="process-hub__top">
+          <div class="process-hub__identity">
+            <span class="process-mark" aria-hidden="true">✦</span>
+            <div>
+              <p id="process-eyebrow">智能剪辑</p>
+              <h2 id="process-title">准备开始</h2>
+            </div>
+          </div>
+          <span id="process-stage" class="process-stage">等待图片</span>
+        </div>
+        <p id="process-message" class="process-message">上传一张图片后，描述要保留的对象和想做的处理。</p>
+
+        <ol id="process-steps" class="process-steps" aria-label="处理步骤">
+          <li data-process-step="1"><span aria-hidden="true">1</span><b>理解需求</b></li>
+          <li data-process-step="2"><span aria-hidden="true">2</span><b>定位主体</b></li>
+          <li data-process-step="3"><span aria-hidden="true">3</span><b>生成选区</b></li>
+          <li data-process-step="4"><span aria-hidden="true">4</span><b>确认方案</b></li>
+          <li data-process-step="5"><span aria-hidden="true">5</span><b>生成预览</b></li>
+        </ol>
+
+        <section id="process-plan" class="process-plan" hidden aria-labelledby="process-plan-title">
+          <div class="process-plan__heading">
+            <h3 id="process-plan-title">我理解为</h3>
+            <span id="process-plan-source" class="process-plan-source">已校验</span>
+          </div>
+          <div id="process-plan-items" class="process-plan-items"></div>
+          <p id="process-plan-note" class="process-plan-note"></p>
+        </section>
+
+        <div id="candidate-choices" class="candidate-choices process-candidates" hidden></div>
+        <div id="process-actions" class="process-actions"></div>
+        <p id="process-assurance" class="process-assurance">原图不会被覆盖；生成的是可继续调整的预览。</p>
       </section>
 
       <div class="workspace-grid">
@@ -62,9 +97,11 @@
           <label class="field-label" for="description">想保留什么，怎么处理背景？</label>
           <textarea id="description" maxlength="500" rows="4" placeholder="例如：保留左边的人物，背景虚化并稍微提亮"></textarea>
           <div class="field-meta">
-            <span>一次选一个主体。支持透明、纯色和虚化背景。</span>
+            <span>一次处理一个主体。</span>
             <span id="description-count">0 / 500</span>
           </div>
+
+          <p class="capability-hints" aria-label="当前支持的效果">抠图 · 白底/纯色 · 背景虚化 · 局部调亮/调色 · 边缘细化</p>
 
           <div class="primary-actions">
             <button id="one-click-button" class="button button--primary" type="button" disabled>
@@ -78,33 +115,6 @@
             </button>
           </div>
           <p id="grounding-status" class="engine-note" aria-live="polite">正在检查自动定位…</p>
-          <p class="one-click-note">一次选一个主体。不能删人、换物、补图或扩图。</p>
-
-          <section id="one-click-panel" class="one-click-panel" hidden aria-live="polite" aria-label="一键处理进度">
-            <div class="one-click-panel__top">
-              <span class="agent-mark" aria-hidden="true">✦</span>
-              <div>
-                <p>一键处理</p>
-                <h3 id="one-click-title">正在处理</h3>
-              </div>
-              <span id="one-click-stage" class="agent-stage">准备中</span>
-            </div>
-            <p id="one-click-message" class="agent-message"></p>
-            <p id="one-click-plan" class="one-click-plan" hidden></p>
-          </section>
-
-          <section id="agent-panel" class="agent-panel" hidden aria-live="polite" aria-label="自动选区进度">
-            <div class="agent-panel__top">
-              <span class="agent-mark" aria-hidden="true">✦</span>
-              <div>
-                <p>自动选区</p>
-                <h3 id="agent-title">等待处理</h3>
-              </div>
-              <span id="agent-stage" class="agent-stage">待命</span>
-            </div>
-            <p id="agent-message" class="agent-message"></p>
-            <div id="agent-actions" class="agent-actions"></div>
-          </section>
 
           <div class="divider"></div>
 
@@ -131,8 +141,6 @@
             <button id="reset-prompts" class="text-button" type="button">清空</button>
           </div>
           <p id="mode-help" class="tool-help">点主体内部，添加包含点。</p>
-
-          <div id="candidate-choices" class="candidate-choices" hidden aria-live="polite"></div>
         </section>
 
         <section class="panel canvas-panel" aria-labelledby="canvas-title">
@@ -153,7 +161,6 @@
             </div>
           </div>
 
-          <p id="status" class="status-message" role="status">先选择一张图片。</p>
           <div id="canvas-shell" class="canvas-shell">
             <div id="canvas-empty" class="canvas-empty">
               <span class="canvas-empty__icon" aria-hidden="true">◎</span>
@@ -173,19 +180,9 @@
           <div class="panel-heading panel-heading--compact">
             <span class="step-number">04</span>
             <div>
-              <h2 id="job-title">处理进度与结果</h2>
-              <p>处理状态和结果会显示在这里。</p>
+              <h2 id="job-title">结果与微调</h2>
+              <p>确认选区后，可继续调整并导出。</p>
             </div>
-          </div>
-
-          <div id="job-card" class="job-card job-card--idle" aria-live="polite">
-            <div class="job-card__top">
-              <span id="job-badge" class="job-badge">等待任务</span>
-              <span id="job-elapsed" class="job-elapsed"></span>
-            </div>
-            <strong id="job-title-text">还没有开始处理</strong>
-            <p id="job-message">上传图片后即可开始。</p>
-            <div class="job-progress" aria-hidden="true"><span id="job-progress-bar"></span></div>
           </div>
 
           <div id="result-section" class="result-section" hidden aria-labelledby="result-heading">
@@ -283,10 +280,6 @@
             </div>
           </section>
 
-          <div class="runtime-detail">
-            <span>服务状态</span>
-            <strong id="runtime-detail">检查中…</strong>
-          </div>
         </aside>
       </div>
     </main>
