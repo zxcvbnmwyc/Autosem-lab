@@ -2702,13 +2702,19 @@ def create_one_click_run() -> Any:
     run.plan = plan.as_storage()
     if plan.status == "unsupported":
         run.phase = "unsupported"
-        run.message = "当前不支持这项处理。"
+        run.message = plan.user_message()
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
-    if plan.status != "ready" or not plan.target or not _one_click_has_visible_effect(plan):
+    if plan.status != "ready":
         run.phase = "needs_input"
-        run.message = "请说明主体和效果，例如“保留左边的人，背景虚化”。"
+        run.message = plan.user_message()
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+    if not plan.target or not _one_click_has_visible_effect(plan):
+        run.phase = "needs_input"
+        run.message = "没有识别到可执行的效果，请明确说明主体和想做的处理。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201

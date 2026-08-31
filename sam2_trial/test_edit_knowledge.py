@@ -4,6 +4,9 @@ import unittest
 from pathlib import Path
 
 from edit_knowledge import (
+    ALLOWED_CARD_IDS,
+    AUTOMATIC_OPERATION_CARD_IDS,
+    EXPECTED_SCOPE_BY_ID,
     KNOWLEDGE_PATH,
     KnowledgeError,
     load_editing_knowledge,
@@ -13,18 +16,40 @@ from grounding import OneClickEditPlan, _constrain_plan_to_retrieved_capabilitie
 
 
 class EditingKnowledgeTests(unittest.TestCase):
-    def test_retrieval_returns_only_relevant_trusted_operation_cards(self) -> None:
+    def test_retrieval_prioritises_relevant_cards_but_exposes_full_capability_set(self) -> None:
         retrieval = retrieve_editing_knowledge("保留左边的人物，背景透明并提亮")
         self.assertEqual(
             set(retrieval.matched_operation_ids),
             {"background.transparent", "subject.brightness"},
         )
         payload = retrieval.as_prompt_data()
-        self.assertEqual(payload["catalog_version"], "2026-08-31.2")
+        self.assertEqual(payload["catalog_version"], "2026-08-31.3")
+        self.assertEqual(
+            set(payload["matched_operation_ids"]),
+            {"background.transparent", "subject.brightness"},
+        )
+        payload_ids = {card["id"] for card in payload["retrieved_capabilities"]}
+        self.assertEqual(payload_ids, ALLOWED_CARD_IDS)
+        self.assertTrue(AUTOMATIC_OPERATION_CARD_IDS.issubset(payload_ids))
         self.assertTrue(
             {"subject.single_visible", "policy.non_generative", "response.contract"}
-            .issubset({card["id"] for card in payload["retrieved_capabilities"]})
+            .issubset(payload_ids)
         )
+
+    def test_retrieval_ignores_punctuation_between_intent_words(self) -> None:
+        retrieval = retrieve_editing_knowledge("保留左边人物，背景，透明")
+        self.assertIn("background.transparent", retrieval.matched_operation_ids)
+
+    def test_retrieval_limit_never_removes_capabilities_from_the_prompt(self) -> None:
+        retrieval = retrieve_editing_knowledge(
+            "边缘自然，手动调整，保留原背景，透明背景，纯色背景，背景虚化，"
+            "主体提亮、更鲜艳并柔焦"
+        )
+        self.assertEqual(len(retrieval.matched_operation_ids), 6)
+        self.assertEqual(retrieval.available_ids, ALLOWED_CARD_IDS)
+
+    def test_every_allowed_card_has_a_fixed_scope(self) -> None:
+        self.assertEqual(set(EXPECTED_SCOPE_BY_ID), ALLOWED_CARD_IDS)
 
     def test_background_becomes_white_retrieves_and_allows_solid_color(self) -> None:
         retrieval = retrieve_editing_knowledge("保留奶酪，背景变白")
@@ -88,8 +113,21 @@ class EditingKnowledgeTests(unittest.TestCase):
             with self.assertRaises(KnowledgeError):
                 load_editing_knowledge(path)
 
-    def test_plan_with_effect_not_in_retrieved_knowledge_falls_back_to_needs_input(self) -> None:
-        retrieval = retrieve_editing_knowledge("保留人物，背景透明")
+    def test_catalog_cannot_promote_manual_capability_to_automatic(self) -> None:
+        source = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
+        manual = next(
+            card for card in source["operations"] if card["id"] == "selection.manual_strokes"
+        )
+        manual["scope"] = "automatic"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "catalog.json"
+            path.write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(KnowledgeError):
+                load_editing_knowledge(path)
+
+    def test_supported_background_effect_survives_a_lexical_miss(self) -> None:
+        retrieval = retrieve_editing_knowledge("保留人物，让周围看起来朦胧些")
+        self.assertNotIn("background.blur", retrieval.matched_operation_ids)
         plan = OneClickEditPlan(
             status="ready",
             target="the person",
@@ -99,23 +137,37 @@ class EditingKnowledgeTests(unittest.TestCase):
             summary="保留人物，背景虚化。",
         )
         safe_plan = _constrain_plan_to_retrieved_capabilities(plan, retrieval)
-        self.assertEqual(safe_plan.status, "needs_input")
-        self.assertEqual(safe_plan.background["mode"], "original")
+        self.assertEqual(safe_plan.status, "ready")
+        self.assertEqual(safe_plan.background["mode"], "blur")
 
-    def test_unrequested_subject_adjustment_is_removed_without_losing_requested_background(self) -> None:
-        retrieval = retrieve_editing_knowledge("保留人物，背景透明")
+    def test_supported_subject_adjustment_survives_a_lexical_miss(self) -> None:
+        retrieval = retrieve_editing_knowledge("保留人物，让人物看起来精神些")
+        self.assertNotIn("subject.brightness", retrieval.matched_operation_ids)
         plan = OneClickEditPlan(
             status="ready",
             target="the person",
             selection={"edge_offset": 0, "feather_px": 0, "cleanup": True},
-            background={"mode": "transparent", "color": "#ffffff", "blur_px": 0},
+            background={"mode": "original", "color": "#ffffff", "blur_px": 0},
             subject={"brightness": 20, "saturation": 0, "blur_px": 0},
-            summary="保留人物，背景透明并提亮。",
+            summary="保留人物并提亮。",
         )
         safe_plan = _constrain_plan_to_retrieved_capabilities(plan, retrieval)
         self.assertEqual(safe_plan.status, "ready")
-        self.assertEqual(safe_plan.background["mode"], "transparent")
-        self.assertEqual(safe_plan.subject["brightness"], 0)
+        self.assertEqual(safe_plan.subject["brightness"], 20)
+
+    def test_multi_effect_request_keeps_every_matched_operation(self) -> None:
+        retrieval = retrieve_editing_knowledge(
+            "保留人物，背景透明，边缘自然，主体提亮、更鲜艳并柔焦"
+        )
+        self.assertTrue(
+            {
+                "background.transparent",
+                "selection.edge_feather",
+                "subject.brightness",
+                "subject.saturation",
+                "subject.blur",
+            }.issubset(set(retrieval.matched_operation_ids))
+        )
 
 
 if __name__ == "__main__":

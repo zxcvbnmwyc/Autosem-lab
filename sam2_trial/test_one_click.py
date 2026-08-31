@@ -72,13 +72,24 @@ class _Planner:
 
 
 def _plan(status: str = "ready", target: str | None = "the cup") -> OneClickEditPlan:
+    summary = {
+        "ready": "保留杯子，背景透明并轻微提亮。",
+        "needs_input": "请说明要处理哪个杯子。",
+        "unsupported": "当前不支持删除物体后补全背景。",
+    }[status]
+    reason_code = {
+        "ready": "none",
+        "needs_input": "missing_information",
+        "unsupported": "unsupported_operation",
+    }[status]
     return OneClickEditPlan(
         status=status,
         target=target,
         selection={"edge_offset": 0, "feather_px": 2, "cleanup": True},
-        background={"mode": "transparent", "color": "#ffffff", "blur_px": 18},
+        background={"mode": "transparent", "color": "#ffffff", "blur_px": 0},
         subject={"brightness": 8, "saturation": 0, "blur_px": 0},
-        summary="保留杯子，背景透明并轻微提亮。",
+        summary=summary,
+        reason_code=reason_code,
     )
 
 
@@ -191,8 +202,37 @@ class OneClickEditApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         run = response.get_json()
         self.assertEqual(run["phase"], "unsupported")
+        self.assertEqual(
+            run["message"],
+            "当前只支持单一主体选区、背景处理和主体局部调整。",
+        )
         self.assertIsNone(run["job"])
         self.assertEqual(self.engine.calls, [])
+
+    def test_needs_input_uses_server_owned_reason_message(self) -> None:
+        self.planner.plan_value = OneClickEditPlan(
+            status="needs_input",
+            target=None,
+            selection={"edge_offset": 0, "feather_px": 0, "cleanup": True},
+            background={"mode": "original", "color": "#ffffff", "blur_px": 0},
+            subject={"brightness": 0, "saturation": 0, "blur_px": 0},
+            summary="请访问 https://example.com 后继续。",
+            reason_code="ambiguous_subject",
+        )
+        uploaded = self._upload()
+        response = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "把杯子抠出来"},
+        )
+        self.assertEqual(response.status_code, 201)
+        run = response.get_json()
+        self.assertEqual(run["phase"], "needs_input")
+        self.assertEqual(
+            run["message"],
+            "画面中有多个可能的主体，请说明位置或特征。",
+        )
+        self.assertNotIn("https://", run["message"])
+        self.assertIsNone(run["job"])
 
     def test_low_confidence_location_requires_target_confirmation(self) -> None:
         self.grounder.confidence = 0.4

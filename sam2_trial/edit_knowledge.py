@@ -21,8 +21,8 @@ CATALOG_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$")
 CARD_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
 MAX_CARD_RULE_CHARS = 480
 MAX_ALIAS_CHARS = 80
-MAX_ALIASES_PER_CARD = 32
-MAX_RETRIEVAL_LIMIT = 6
+MAX_ALIASES_PER_CARD = 64
+MAX_RETRIEVAL_LIMIT = 9
 
 # These are intentionally hard-coded.  A catalog can describe an existing
 # capability or narrow its wording, but it cannot grant a new executable tool.
@@ -48,6 +48,25 @@ OPERATION_CARD_IDS = frozenset(
 )
 ALLOWED_CARD_IDS = CORE_CARD_IDS | OPERATION_CARD_IDS
 ALLOWED_SCOPES = frozenset({"automatic", "manual_only", "policy"})
+EXPECTED_SCOPE_BY_ID = {
+    "subject.single_visible": "automatic",
+    "policy.non_generative": "policy",
+    "response.contract": "policy",
+    "selection.edge_feather": "automatic",
+    "selection.manual_strokes": "manual_only",
+    "background.original": "automatic",
+    "background.transparent": "automatic",
+    "background.color": "automatic",
+    "background.blur": "automatic",
+    "subject.brightness": "automatic",
+    "subject.saturation": "automatic",
+    "subject.blur": "automatic",
+}
+AUTOMATIC_OPERATION_CARD_IDS = frozenset(
+    card_id
+    for card_id in OPERATION_CARD_IDS
+    if EXPECTED_SCOPE_BY_ID[card_id] == "automatic"
+)
 
 
 class KnowledgeError(RuntimeError):
@@ -100,12 +119,18 @@ class CapabilityRetrieval:
     def as_prompt_data(self) -> dict[str, Any]:
         return {
             "catalog_version": self.catalog_version,
+            "matched_operation_ids": list(self.matched_operation_ids),
             "retrieved_capabilities": [card.as_prompt_data() for card in self.cards],
         }
 
 
 def _normalise(text: str) -> str:
-    return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+    normalised = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(
+        char
+        for char in normalised
+        if not char.isspace() and unicodedata.category(char)[0] not in {"P", "Z"}
+    )
 
 
 def _text(value: Any, field: str, maximum: int, *, minimum: int = 1) -> str:
@@ -129,6 +154,8 @@ def _load_card(value: Any, *, expected_ids: frozenset[str], section: str) -> Cap
     scope = _text(value.get("scope"), f"{section}.scope", 24)
     if scope not in ALLOWED_SCOPES:
         raise KnowledgeError(f"知识库中的 {section}.scope 不受支持。")
+    if scope != EXPECTED_SCOPE_BY_ID[card_id]:
+        raise KnowledgeError(f"知识库中的 {section}.scope 与固定能力权限不一致。")
     rule = _text(value.get("rule"), f"{section}.rule", MAX_CARD_RULE_CHARS)
     raw_aliases = value.get("aliases")
     if not isinstance(raw_aliases, list) or len(raw_aliases) > MAX_ALIASES_PER_CARD:
@@ -205,9 +232,17 @@ def retrieve_editing_knowledge(
             ranked.append((sum(len(_normalise(alias)) for alias in matches), index, card))
     ranked.sort(key=lambda item: (-item[0], item[1]))
     selected = tuple(card for _score, _index, card in ranked[: catalog.retrieval_limit])
+    selected_ids = frozenset(card.card_id for card in selected)
+    remaining = tuple(
+        card for card in catalog.operations if card.card_id not in selected_ids
+    )
     return CapabilityRetrieval(
         catalog_version=catalog.catalog_version,
-        cards=(*catalog.always_include, *selected),
+        # The catalog is deliberately tiny.  Qwen always receives the complete
+        # trusted capability set so a colloquial paraphrase cannot hide an
+        # otherwise supported operation.  Lexical matches only affect order
+        # and diagnostics; they are never an execution permission boundary.
+        cards=(*catalog.always_include, *selected, *remaining),
         matched_operation_ids=tuple(card.card_id for card in selected),
     )
 
