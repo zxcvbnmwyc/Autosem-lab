@@ -14,7 +14,13 @@
   const segmentButton = document.getElementById("segment-button");
   const groundButton = document.getElementById("ground-button");
   const runButton = document.getElementById("run-button");
+  const oneClickButton = document.getElementById("one-click-button");
   const groundingStatus = document.getElementById("grounding-status");
+  const oneClickPanel = document.getElementById("one-click-panel");
+  const oneClickTitle = document.getElementById("one-click-title");
+  const oneClickStage = document.getElementById("one-click-stage");
+  const oneClickMessage = document.getElementById("one-click-message");
+  const oneClickPlan = document.getElementById("one-click-plan");
   const agentPanel = document.getElementById("agent-panel");
   const agentTitle = document.getElementById("agent-title");
   const agentStage = document.getElementById("agent-stage");
@@ -115,6 +121,12 @@
     agentPhase: null,
     agentMessage: "",
     agentEvaluation: null,
+    oneClickRunId: null,
+    oneClickPhase: null,
+    oneClickMessage: "",
+    oneClickPlan: null,
+    oneClickPollTimer: null,
+    oneClickPollFailures: 0,
     groundingAvailable: false,
     mode: "positive",
     busy: false,
@@ -197,6 +209,9 @@
     segmentButton.disabled = state.busy || !state.imageId || !hasManualPrompt;
     groundButton.disabled = state.busy || !state.imageId || !state.groundingAvailable || !hasDescription;
     runButton.disabled = state.busy || !state.imageId || !hasDescription;
+    if (oneClickButton) {
+      oneClickButton.disabled = state.busy || !state.imageId || !state.groundingAvailable || !hasDescription;
+    }
     if (undoPromptButton) {
       undoPromptButton.disabled = state.busy || !state.promptUndo.length;
     }
@@ -256,6 +271,11 @@
     runButton.innerHTML = isBusy && action === "agent"
       ? "<span aria-hidden=\"true\">⋯</span> Agent 正在分析"
       : "<span aria-hidden=\"true\">✦</span> 启动分割 Agent";
+    if (oneClickButton) {
+      oneClickButton.innerHTML = isBusy && action === "one-click"
+        ? "<span aria-hidden=\"true\">⋯</span> Qwen 正在执行"
+        : "<span aria-hidden=\"true\">✦</span> 一键剪辑";
+    }
     groundButton.textContent = isBusy && action === "ground" ? "Qwen 正在定位…" : "只查看 Qwen 候选";
     segmentButton.textContent = isBusy && action === "segment"
       ? "任务进行中…"
@@ -269,6 +289,7 @@
     refreshActions();
     renderCandidateChoices();
     renderAgentPanel();
+    renderOneClickPanel();
   }
 
   function pointFromEvent(event) {
@@ -698,6 +719,112 @@
     agentPanel.hidden = true;
   }
 
+  function resetOneClickPoll() {
+    if (state.oneClickPollTimer) {
+      window.clearTimeout(state.oneClickPollTimer);
+      state.oneClickPollTimer = null;
+    }
+  }
+
+  function clearOneClickState() {
+    resetOneClickPoll();
+    state.oneClickRunId = null;
+    state.oneClickPhase = null;
+    state.oneClickMessage = "";
+    state.oneClickPlan = null;
+    state.oneClickPollFailures = 0;
+    if (oneClickPanel) {
+      oneClickPanel.hidden = true;
+    }
+  }
+
+  function oneClickPhaseMeta(phase) {
+    return {
+      planning: { title: "Qwen 正在理解需求", stage: "理解中" },
+      segmenting: { title: "SAM2 正在提取主体", stage: "描边中" },
+      ready_to_apply: { title: "正在套用编辑效果", stage: "合成中" },
+      composing: { title: "正在按原图尺寸合成", stage: "合成中" },
+      completed: { title: "一键剪辑已完成", stage: "完成" },
+      needs_input: { title: "需要更具体的需求", stage: "待补充" },
+      unsupported: { title: "当前能力暂不支持", stage: "受限" },
+      failed: { title: "这次没有完成", stage: "可重试" },
+    }[phase] || { title: "一键剪辑准备中", stage: "准备中" };
+  }
+
+  function renderOneClickPanel() {
+    if (!oneClickPanel || !oneClickTitle || !oneClickStage || !oneClickMessage || !oneClickPlan) {
+      return;
+    }
+    if (!state.oneClickRunId || !state.oneClickPhase) {
+      oneClickPanel.hidden = true;
+      return;
+    }
+    const meta = oneClickPhaseMeta(state.oneClickPhase);
+    oneClickPanel.hidden = false;
+    oneClickPanel.className = "one-click-panel one-click-panel--" + state.oneClickPhase.replaceAll("_", "-");
+    oneClickTitle.textContent = meta.title;
+    oneClickStage.textContent = meta.stage;
+    oneClickMessage.textContent = state.oneClickMessage || "正在整理一键剪辑流程。";
+    const plan = state.oneClickPlan;
+    if (plan && typeof plan === "object" && typeof plan.summary === "string" && plan.summary.trim()) {
+      const target = typeof plan.target === "string" && plan.target.trim() ? "主体：「" + plan.target.trim() + "」 · " : "";
+      oneClickPlan.textContent = target + "执行计划：" + plan.summary.trim();
+      oneClickPlan.hidden = false;
+    } else {
+      oneClickPlan.hidden = true;
+      oneClickPlan.textContent = "";
+    }
+  }
+
+  function applyOneClickCandidate(candidate) {
+    const box = candidateToBox(candidate);
+    if (!box) {
+      return;
+    }
+    state.box = box;
+    state.boxSource = "qwen";
+    state.draftBox = null;
+    state.boxDragStart = null;
+    redraw();
+  }
+
+  function syncOneClickPlanToEditor(plan) {
+    if (!plan || typeof plan !== "object") {
+      return;
+    }
+    const selection = plan.selection && typeof plan.selection === "object" ? plan.selection : {};
+    const background = plan.background && typeof plan.background === "object" ? plan.background : {};
+    const subject = plan.subject && typeof plan.subject === "object" ? plan.subject : {};
+    const assign = (input, value) => {
+      if (!input || !Number.isFinite(Number(value))) return;
+      input.value = String(Math.round(Number(value)));
+    };
+    assign(edgeOffset, selection.edge_offset);
+    assign(featherPx, selection.feather_px);
+    if (maskCleanup && typeof selection.cleanup === "boolean") maskCleanup.checked = selection.cleanup;
+    if (backgroundMode && typeof background.mode === "string") backgroundMode.value = background.mode;
+    if (backgroundColor && typeof background.color === "string" && /^#[0-9a-f]{6}$/i.test(background.color)) backgroundColor.value = background.color;
+    assign(backgroundBlurPx, background.blur_px);
+    assign(subjectBrightness, subject.brightness);
+    assign(subjectSaturation, subject.saturation);
+    assign(subjectBlurPx, subject.blur_px);
+    syncEditControls();
+  }
+
+  function applyOneClickRun(run) {
+    if (!run || typeof run.run_id !== "string" || typeof run.phase !== "string") {
+      throw new Error("一键剪辑没有返回有效状态，请重新试一次。");
+    }
+    state.oneClickRunId = run.run_id;
+    state.oneClickPhase = run.phase;
+    state.oneClickMessage = typeof run.message === "string" ? run.message : "正在处理一键剪辑。";
+    state.oneClickPlan = run.plan && typeof run.plan === "object" ? run.plan : null;
+    if (run.selected_candidate && typeof run.selected_candidate === "object") {
+      applyOneClickCandidate(run.selected_candidate);
+    }
+    renderOneClickPanel();
+  }
+
   function agentPhaseMeta(phase) {
     return {
       needs_choice: { title: "需要你确认对象", stage: "待选择" },
@@ -1037,6 +1164,7 @@
       editResult.hidden = true;
     }
     resetJobPoll();
+    clearOneClickState();
     state.activeJobId = null;
     state.pollUrl = null;
     state.imageId = null;
@@ -1185,6 +1313,148 @@
       setStatus(state.agentMessage, state.agentPhase === "needs_manual_prompt" ? "" : "success");
     } catch (error) {
       clearAgentState();
+      setBusy(false);
+      setStatus(error.message, "error");
+    }
+  }
+
+  function oneClickJobResult(run) {
+    return run && run.job && typeof run.job === "object" ? run.job : null;
+  }
+
+  function showOneClickSegmentation(run) {
+    const job = oneClickJobResult(run);
+    if (!job || job.status !== "succeeded") {
+      return false;
+    }
+    try {
+      displayResult(job);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  async function finishOneClickRun(run) {
+    const phase = run.phase;
+    if (phase === "completed") {
+      if (!showOneClickSegmentation(run)) {
+        throw new Error("一键剪辑已完成，但没有找到可显示的选区结果。");
+      }
+      syncOneClickPlanToEditor(run.plan);
+      await displayEditResult(run.edit);
+      setBusy(false);
+      setStatus("一键剪辑已完成；下载会导出原图尺寸 PNG，也可以继续手动微调。", "success");
+      if (editResult) editResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+    if (phase === "needs_input") {
+      showOneClickSegmentation(run);
+      setBusy(false);
+      setStatus(run.message || "自动结果需要人工确认。你可以改写需求，或继续手动微调。", "error");
+      return;
+    }
+    if (phase === "unsupported") {
+      setBusy(false);
+      setStatus(run.message || "这个要求暂时超出当前一键剪辑的本地能力。", "error");
+      return;
+    }
+    if (phase === "failed") {
+      showOneClickSegmentation(run);
+      setBusy(false);
+      setStatus(run.message || "一键剪辑没有完成。你可以重试或使用手动编辑。", "error");
+    }
+  }
+
+  async function applyOneClickEdit() {
+    if (!state.oneClickRunId || state.oneClickRunId === "pending") {
+      return null;
+    }
+    const response = await fetch("/api/one-click-runs/" + encodeURIComponent(state.oneClickRunId) + "/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const run = await readResponse(response);
+    applyOneClickRun(run);
+    return run;
+  }
+
+  async function pollOneClickRun() {
+    if (!state.oneClickRunId || state.oneClickRunId === "pending") {
+      return;
+    }
+    try {
+      const response = await fetch("/api/one-click-runs/" + encodeURIComponent(state.oneClickRunId), {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      let run = await readResponse(response);
+      state.oneClickPollFailures = 0;
+      applyOneClickRun(run);
+      const job = oneClickJobResult(run);
+      if (job) updateJobCard(job);
+
+      if (run.phase === "segmenting" || run.phase === "composing") {
+        state.oneClickPollTimer = window.setTimeout(pollOneClickRun, pollIntervalMs);
+        return;
+      }
+      if (run.phase === "ready_to_apply") {
+        run = await applyOneClickEdit();
+        if (run) await finishOneClickRun(run);
+        return;
+      }
+      await finishOneClickRun(run);
+    } catch (error) {
+      state.oneClickPollFailures += 1;
+      if (state.oneClickPollFailures >= 3) {
+        setBusy(false);
+        setStatus("暂时无法读取一键剪辑状态。请稍后刷新页面确认结果。", "error");
+        return;
+      }
+      state.oneClickPollTimer = window.setTimeout(pollOneClickRun, pollIntervalMs * state.oneClickPollFailures);
+    }
+  }
+
+  async function startOneClick() {
+    if (!state.imageId) {
+      setStatus("请先选择一张图片。", "error");
+      return;
+    }
+    if (!description.value.trim()) {
+      setStatus("请用一句话写下你想完成的图片编辑效果。", "error");
+      return;
+    }
+    clearAgentState();
+    clearGrounding();
+    clearQwenBox();
+    resetOneClickPoll();
+    state.oneClickRunId = "pending";
+    state.oneClickPhase = "planning";
+    state.oneClickMessage = "Qwen 正在把你的需求转换为可执行的本地编辑计划。";
+    state.oneClickPlan = null;
+    redraw();
+    renderOneClickPanel();
+    setBusy(true, "one-click");
+    setStatus("正在理解需求、定位主体并安排本地 SAM2…", "working");
+
+    try {
+      const response = await fetch("/api/one-click-runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_id: state.imageId, instruction: description.value.trim() }),
+      });
+      const run = await readResponse(response);
+      applyOneClickRun(run);
+      const job = oneClickJobResult(run);
+      if (job) updateJobCard(job);
+      if (run.phase === "segmenting" || run.phase === "ready_to_apply" || run.phase === "composing") {
+        await pollOneClickRun();
+      } else {
+        await finishOneClickRun(run);
+      }
+    } catch (error) {
+      if (state.oneClickRunId === "pending") clearOneClickState();
       setBusy(false);
       setStatus(error.message, "error");
     }
@@ -1745,6 +2015,9 @@
 
   description.addEventListener("input", () => {
     updateDescriptionCount();
+    if (state.oneClickRunId && state.oneClickRunId !== "pending") {
+      clearOneClickState();
+    }
     if (state.groundingId || state.agentRunId) {
       const clearsQwenBox = state.boxSource === "qwen";
       clearGrounding();
@@ -1766,6 +2039,7 @@
   if (redoPromptButton) redoPromptButton.addEventListener("click", redoPrompt);
   groundButton.addEventListener("click", autoGround);
   runButton.addEventListener("click", startAgent);
+  if (oneClickButton) oneClickButton.addEventListener("click", startOneClick);
   segmentButton.addEventListener("click", startSegmentation);
   if (maskAddButton) maskAddButton.addEventListener("click", () => setMaskTool("mask-add"));
   if (maskEraseButton) maskEraseButton.addEventListener("click", () => setMaskTool("mask-erase"));
@@ -1901,11 +2175,13 @@
 
   window.addEventListener("beforeunload", () => {
     resetJobPoll();
+    resetOneClickPoll();
     clearLocalPreview();
   });
 
   setMode("positive");
   syncEditControls();
+  renderOneClickPanel();
   updateDescriptionCount();
   loadGroundingStatus();
   loadRuntimeStatus();

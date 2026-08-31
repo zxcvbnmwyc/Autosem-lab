@@ -33,12 +33,12 @@
       <section class="workspace-intro" aria-labelledby="workspace-title">
         <div>
           <p class="eyebrow">AUTOMATIC SEMANTIC SEGMENTATION</p>
-          <h1 id="workspace-title">从一句描述，到一个干净的轮廓。</h1>
-          <p>先用 Qwen 理解你要找的对象，再由本地 SAM2 提取像素级边界。你也可以完全跳过云端定位，直接用点和框进行分割。</p>
+          <h1 id="workspace-title">从一句需求，到一张可继续修改的图片。</h1>
+          <p>Qwen 先理解你想保留的主体和效果，再由本地 SAM2 提取像素级边界并完成本地合成。结果不满意时，仍可以用点、框和画笔细化。</p>
         </div>
         <aside class="privacy-note">
           <strong>数据边界</strong>
-          <span>只有点击 Qwen 自动定位时，图片和描述才会发送到你配置的模型服务；SAM2 分割和结果文件保留在本机。</span>
+          <span>只有点击一键剪辑或 Qwen 自动定位时，图片和文字才会发送到你配置的模型服务；SAM2 分割和结果文件保留在本机。</span>
         </aside>
       </section>
 
@@ -47,8 +47,8 @@
           <div class="panel-heading">
             <span class="step-number">01</span>
             <div>
-              <h2 id="input-title">输入目标</h2>
-              <p>上传一张图片，再告诉 AutoSEM 你想要什么。</p>
+              <h2 id="input-title">一键剪辑</h2>
+              <p>上传一张图片，再用一句话告诉 AutoSEM 你想要什么。</p>
             </div>
           </div>
 
@@ -60,22 +60,39 @@
           </label>
           <p id="file-name" class="file-name" aria-live="polite">尚未选择图片</p>
 
-          <label class="field-label" for="description">你想分割什么？</label>
-          <textarea id="description" maxlength="500" rows="4" placeholder="例如：中间的深色纵向连接区域"></textarea>
+          <label class="field-label" for="description">你想怎么剪？</label>
+          <textarea id="description" maxlength="500" rows="4" placeholder="例如：保留左边的人物，背景虚化并稍微提亮"></textarea>
           <div class="field-meta">
-            <span>描述越具体，自动定位越可靠。</span>
+            <span>一句话即可：Qwen 会理解主体和可执行的本地效果。</span>
             <span id="description-count">0 / 500</span>
           </div>
 
           <div class="primary-actions">
-            <button id="run-button" class="button button--primary" type="button" disabled>
-              <span aria-hidden="true">✦</span> 启动分割 Agent
+            <button id="one-click-button" class="button button--primary" type="button" disabled>
+              <span aria-hidden="true">✦</span> 一键剪辑
+            </button>
+            <button id="run-button" class="button button--secondary" type="button" disabled>
+              启动手动分割 Agent
             </button>
             <button id="ground-button" class="button button--secondary" type="button" disabled>
               只查看 Qwen 候选
             </button>
           </div>
           <p id="grounding-status" class="engine-note" aria-live="polite">正在检查视觉模型配置…</p>
+          <p class="one-click-note">可自动：抠主体、透明 / 纯色 / 虚化背景、边缘优化与局部调色。生成式删除、替换和扩图暂未接入。</p>
+
+          <section id="one-click-panel" class="one-click-panel" hidden aria-live="polite" aria-label="一键剪辑进度">
+            <div class="one-click-panel__top">
+              <span class="agent-mark" aria-hidden="true">✦</span>
+              <div>
+                <p>ONE-CLICK EDIT</p>
+                <h3 id="one-click-title">正在理解需求</h3>
+              </div>
+              <span id="one-click-stage" class="agent-stage">准备中</span>
+            </div>
+            <p id="one-click-message" class="agent-message"></p>
+            <p id="one-click-plan" class="one-click-plan" hidden></p>
+          </section>
 
           <section id="agent-panel" class="agent-panel" hidden aria-live="polite" aria-label="Agent 决策状态">
             <div class="agent-panel__top">
@@ -95,8 +112,8 @@
           <div class="panel-heading panel-heading--compact">
             <span class="step-number">02</span>
             <div>
-              <h2>细化提示</h2>
-              <p>可在画布上加点或框选；这一步始终在本机进行。</p>
+              <h2>手动细化（可选）</h2>
+              <p>需要时可在画布上加点或框选；这一步始终在本机进行。</p>
             </div>
           </div>
 

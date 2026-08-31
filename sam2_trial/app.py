@@ -39,8 +39,11 @@ from grounding import (
     GroundingCandidate,
     GroundingError,
     GroundingProposal,
+    OneClickEditPlan,
+    QwenEditPlanner,
     QwenGrounder,
     load_local_dotenv,
+    parse_one_click_edit_plan,
 )
 from mask_editing import apply_mask_strokes, compose_edit, refine_mask
 
@@ -84,6 +87,7 @@ IMAGE_PREVIEW_DIR = DATA_DIR / "previews"
 IMAGE_META_DIR = DATA_DIR / "images"
 GROUNDING_DIR = DATA_DIR / "groundings"
 AGENT_RUN_DIR = DATA_DIR / "agent-runs"
+ONE_CLICK_RUN_DIR = DATA_DIR / "one-click-runs"
 JOBS_DIR = DATA_DIR / "jobs"
 RESULTS_DIR = DATA_DIR / "results"
 METRICS_DIR = DATA_DIR / "metrics"
@@ -123,6 +127,7 @@ QWEN_REPRESENTATIVE_POINT_ENABLED = _environment_bool("QWEN_REPRESENTATIVE_POINT
 MAX_PROMPT_POINTS = 24
 MAX_DESCRIPTION_CHARS = 500
 AGENT_AUTO_SEGMENT_CONFIDENCE = 0.75
+ONE_CLICK_MIN_GROUNDING_CONFIDENCE = 0.75
 AGENT_REVIEW_IOU = 0.70
 AGENT_MIN_MASK_AREA_RATIO = 0.001
 AGENT_MAX_MASK_AREA_RATIO = 0.92
@@ -139,7 +144,7 @@ MAX_EDIT_FEATHER = 32
 MAX_EDIT_BLUR = 64
 MAX_EDITS_PER_RESULT = 12
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-METRIC_EVENT_KINDS = {"page_view", "upload", "grounding", "agent_run", "segment_job", "image_edit"}
+METRIC_EVENT_KINDS = {"page_view", "upload", "grounding", "agent_run", "segment_job", "image_edit", "one_click_edit"}
 _METRICS_SESSION_SALT = (
     os.environ.get("METRICS_SESSION_SALT")
     or os.environ.get("APP_SECRET_KEY")
@@ -567,6 +572,16 @@ AGENT_PHASES = {
     "completed",
     "failed",
 }
+ONE_CLICK_PHASES = {
+    "planning",
+    "segmenting",
+    "ready_to_apply",
+    "composing",
+    "completed",
+    "needs_input",
+    "unsupported",
+    "failed",
+}
 
 
 @dataclass
@@ -639,6 +654,89 @@ class AgentRun:
             or (record.grounding_id is not None and not IMAGE_ID_RE.fullmatch(record.grounding_id))
             or (record.job_id is not None and not IMAGE_ID_RE.fullmatch(record.job_id))
             or record.attempts < 0
+            or (record.selected_candidate_index is not None and record.selected_candidate_index < 0)
+        ):
+            return None
+        return record
+
+
+@dataclass
+class OneClickRun:
+    """Durable state for a single natural-language local image edit.
+
+    The run keeps only server-validated planning data.  It never persists raw
+    Qwen output, an API key, or image pixels.
+    """
+
+    run_id: str
+    image_id: str
+    owner_id: str
+    instruction: str
+    created_at: str
+    expires_at: str | None
+    phase: str
+    message: str
+    plan: dict[str, Any] | None = None
+    grounding_id: str | None = None
+    selected_candidate_index: int | None = None
+    job_id: str | None = None
+    result_id: str | None = None
+    edit: dict[str, Any] | None = None
+
+    def as_storage(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "image_id": self.image_id,
+            "owner_id": self.owner_id,
+            "instruction": self.instruction,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "phase": self.phase,
+            "message": self.message,
+            "plan": self.plan,
+            "grounding_id": self.grounding_id,
+            "selected_candidate_index": self.selected_candidate_index,
+            "job_id": self.job_id,
+            "result_id": self.result_id,
+            "edit": self.edit,
+        }
+
+    @classmethod
+    def from_storage(cls, value: dict[str, Any]) -> "OneClickRun | None":
+        try:
+            selected = value.get("selected_candidate_index")
+            raw_plan = value.get("plan")
+            plan = raw_plan if isinstance(raw_plan, dict) else None
+            if plan is not None:
+                plan = parse_one_click_edit_plan(plan).as_storage()
+            record = cls(
+                run_id=str(value["run_id"]),
+                image_id=str(value["image_id"]),
+                owner_id=str(value["owner_id"]),
+                instruction=str(value["instruction"]),
+                created_at=str(value["created_at"]),
+                expires_at=value.get("expires_at") if isinstance(value.get("expires_at"), str) else None,
+                phase=str(value["phase"]),
+                message=str(value["message"]),
+                plan=plan,
+                grounding_id=value.get("grounding_id") if isinstance(value.get("grounding_id"), str) else None,
+                selected_candidate_index=selected if isinstance(selected, int) and not isinstance(selected, bool) else None,
+                job_id=value.get("job_id") if isinstance(value.get("job_id"), str) else None,
+                result_id=value.get("result_id") if isinstance(value.get("result_id"), str) else None,
+                edit=value.get("edit") if isinstance(value.get("edit"), dict) else None,
+            )
+        except (KeyError, TypeError, ValueError, GroundingError):
+            return None
+        if (
+            not IMAGE_ID_RE.fullmatch(record.run_id)
+            or not IMAGE_ID_RE.fullmatch(record.image_id)
+            or not IMAGE_ID_RE.fullmatch(record.owner_id)
+            or not record.instruction
+            or len(record.instruction) > MAX_DESCRIPTION_CHARS
+            or record.phase not in ONE_CLICK_PHASES
+            or (record.grounding_id is not None and not IMAGE_ID_RE.fullmatch(record.grounding_id))
+            or (record.job_id is not None and not IMAGE_ID_RE.fullmatch(record.job_id))
+            or (record.result_id is not None and not IMAGE_ID_RE.fullmatch(record.result_id))
             or (record.selected_candidate_index is not None and record.selected_candidate_index < 0)
         ):
             return None
@@ -902,11 +1000,15 @@ grounding_records: dict[str, GroundingRecord] = {}
 grounding_records_lock = threading.Lock()
 agent_runs: dict[str, AgentRun] = {}
 agent_runs_lock = threading.Lock()
+one_click_runs: dict[str, OneClickRun] = {}
+one_click_runs_lock = threading.Lock()
+one_click_execution_lock = threading.Lock()
 engine = Sam2Engine()
 grounder = QwenGrounder()
+edit_planner = QwenEditPlanner()
 limiter = SlidingWindowLimiter()
 
-for directory in (UPLOAD_DIR, IMAGE_PREVIEW_DIR, IMAGE_META_DIR, GROUNDING_DIR, AGENT_RUN_DIR, JOBS_DIR, RESULTS_DIR, METRICS_DIR):
+for directory in (UPLOAD_DIR, IMAGE_PREVIEW_DIR, IMAGE_META_DIR, GROUNDING_DIR, AGENT_RUN_DIR, ONE_CLICK_RUN_DIR, JOBS_DIR, RESULTS_DIR, METRICS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
@@ -952,6 +1054,10 @@ def _grounding_path(grounding_id: str) -> Path:
 
 def _agent_run_path(agent_id: str) -> Path:
     return AGENT_RUN_DIR / f"{agent_id}.json"
+
+
+def _one_click_run_path(run_id: str) -> Path:
+    return ONE_CLICK_RUN_DIR / f"{run_id}.json"
 
 
 def _job_path(job_id: str) -> Path:
@@ -1011,6 +1117,19 @@ def _load_agent_run(agent_id: str) -> AgentRun | None:
     return run
 
 
+def _load_one_click_run(run_id: str) -> OneClickRun | None:
+    with one_click_runs_lock:
+        cached = one_click_runs.get(run_id)
+    if cached is not None:
+        return cached
+    storage = _json_read(_one_click_run_path(run_id))
+    run = OneClickRun.from_storage(storage) if storage else None
+    if run is not None:
+        with one_click_runs_lock:
+            one_click_runs[run_id] = run
+    return run
+
+
 def _require_agent_run(agent_id: str) -> AgentRun:
     if not IMAGE_ID_RE.fullmatch(agent_id):
         abort(404)
@@ -1020,10 +1139,25 @@ def _require_agent_run(agent_id: str) -> AgentRun:
     return run
 
 
+def _require_one_click_run(run_id: str) -> OneClickRun:
+    if not IMAGE_ID_RE.fullmatch(run_id):
+        abort(404)
+    run = _load_one_click_run(run_id)
+    if run is None or run.owner_id != _current_owner() or _safe_iso_before_now(run.expires_at):
+        abort(404)
+    return run
+
+
 def _save_agent_run(run: AgentRun) -> None:
     _json_write(_agent_run_path(run.agent_id), run.as_storage())
     with agent_runs_lock:
         agent_runs[run.agent_id] = run
+
+
+def _save_one_click_run(run: OneClickRun) -> None:
+    _json_write(_one_click_run_path(run.run_id), run.as_storage())
+    with one_click_runs_lock:
+        one_click_runs[run.run_id] = run
 
 
 def _agent_next_action(phase: str) -> str:
@@ -1070,6 +1204,112 @@ def _agent_public(run: AgentRun, record: ImageRecord) -> dict[str, Any]:
         "attempts": run.attempts,
         "evaluation": run.evaluation,
     }
+
+
+def _one_click_plan(run: OneClickRun) -> OneClickEditPlan | None:
+    if run.plan is None:
+        return None
+    try:
+        return parse_one_click_edit_plan(run.plan)
+    except GroundingError:
+        return None
+
+
+def _one_click_selected_candidate(run: OneClickRun, record: ImageRecord) -> dict[str, Any] | None:
+    if run.grounding_id is None or run.selected_candidate_index is None:
+        return None
+    grounding = _load_grounding(run.grounding_id)
+    if (
+        grounding is None
+        or grounding.owner_id != run.owner_id
+        or grounding.image_id != record.image_id
+        or not 0 <= run.selected_candidate_index < len(grounding.proposal.candidates)
+    ):
+        return None
+    return grounding.proposal.candidates[run.selected_candidate_index].as_metadata(record.width, record.height)
+
+
+def _one_click_job_public(run: OneClickRun) -> dict[str, Any] | None:
+    if run.job_id is None:
+        return None
+    job = job_manager.get(run.job_id)
+    if job is None or job.owner_id != run.owner_id:
+        return None
+    public = job.as_public(job_manager.queue_depth)
+    public["poll_url"] = f"/api/jobs/{job.job_id}"
+    return public
+
+
+def _one_click_public(run: OneClickRun, record: ImageRecord) -> dict[str, Any]:
+    plan = _one_click_plan(run)
+    return {
+        "run_id": run.run_id,
+        "image_id": run.image_id,
+        "instruction": run.instruction,
+        "phase": run.phase,
+        "message": run.message,
+        "created_at": run.created_at,
+        "plan": plan.as_storage() if plan is not None else None,
+        "grounding_id": run.grounding_id,
+        "selected_candidate_index": run.selected_candidate_index,
+        "selected_candidate": _one_click_selected_candidate(run, record),
+        "job": _one_click_job_public(run),
+        "result_id": run.result_id,
+        "edit": run.edit,
+    }
+
+
+def _one_click_quality_message(record: ImageRecord, job: JobRecord) -> str | None:
+    result = job.result if isinstance(job.result, dict) else None
+    if result is None:
+        return "SAM2 没有返回可用于一键编辑的选区。"
+    area = result.get("mask_area_px")
+    score = result.get("estimated_iou")
+    if not isinstance(area, (int, float)) or area <= 0:
+        return "SAM2 没有生成可用选区。"
+    ratio = float(area) / float(record.width * record.height)
+    if ratio < AGENT_MIN_MASK_AREA_RATIO:
+        return "自动选区过小，暂不直接套用效果。请改写需求或进入手动编辑。"
+    if ratio > AGENT_MAX_MASK_AREA_RATIO:
+        return "自动选区覆盖范围过大，暂不直接套用效果。请改写需求或进入手动编辑。"
+    if isinstance(score, (int, float)) and score < AGENT_REVIEW_IOU:
+        return "自动选区的质量信号偏弱，已保留结果供你手动微调。"
+    return None
+
+
+def _refresh_one_click_run(run: OneClickRun, record: ImageRecord) -> None:
+    """Advance only the durable state after SAM2 finishes; never compose here."""
+    if run.phase != "segmenting" or run.job_id is None:
+        return
+    job = job_manager.get(run.job_id)
+    if job is None or job.owner_id != run.owner_id:
+        run.phase = "failed"
+        run.message = "一键剪辑的本地分割任务已失效，请重新执行。"
+        _save_one_click_run(run)
+        return
+    if job.status == "failed":
+        run.phase = "failed"
+        run.message = job.error or "SAM2 未能完成本次一键剪辑。"
+        _save_one_click_run(run)
+        return
+    if job.status != "succeeded":
+        return
+    result = job.result if isinstance(job.result, dict) else None
+    result_id = result.get("result_id") if isinstance(result, dict) else None
+    if not isinstance(result_id, str) or not IMAGE_ID_RE.fullmatch(result_id):
+        run.phase = "failed"
+        run.message = "SAM2 完成后没有返回可编辑结果，请重新执行。"
+        _save_one_click_run(run)
+        return
+    quality_message = _one_click_quality_message(record, job)
+    run.result_id = result_id
+    if quality_message is not None:
+        run.phase = "needs_input"
+        run.message = quality_message
+    else:
+        run.phase = "ready_to_apply"
+        run.message = "已得到可靠选区，正在准备套用本地编辑效果。"
+    _save_one_click_run(run)
 
 
 def _agent_candidate_box(record: ImageRecord, grounding: GroundingRecord, candidate_index: int) -> list[float]:
@@ -1411,6 +1651,29 @@ def _write_edit_artifacts(
     }
 
 
+def _render_local_edit(
+    record: ImageRecord,
+    result_dir: Path,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Render an owned local edit from server-validated settings only."""
+    mask = _load_result_mask(result_dir, record)
+    mask = apply_mask_strokes(mask, settings["strokes"])
+    mask = refine_mask(mask, edge_offset=settings["edge_offset"], cleanup=settings["cleanup"])
+    rendered = compose_edit(
+        _load_rgb(record),
+        mask,
+        background_mode=settings["background_mode"],
+        background_color=_rgb_color(settings["background_color"]),
+        background_blur_px=settings["background_blur_px"],
+        subject_brightness=settings["subject_brightness"],
+        subject_saturation=settings["subject_saturation"],
+        subject_blur_px=settings["subject_blur_px"],
+        feather_px=settings["feather_px"],
+    )
+    return _write_edit_artifacts(result_dir, record, settings, mask, rendered)
+
+
 def _grounding_representative_point(
     record: ImageRecord,
     grounding: GroundingRecord | None,
@@ -1730,6 +1993,13 @@ def _cleanup_expired_data() -> None:
         metadata_path.unlink(missing_ok=True)
         with agent_runs_lock:
             agent_runs.pop(run.agent_id, None)
+    for metadata_path in ONE_CLICK_RUN_DIR.glob("*.json"):
+        run = OneClickRun.from_storage(_json_read(metadata_path) or {})
+        if run is None or (run.image_id not in expired_images and not _safe_iso_before_now(run.expires_at)):
+            continue
+        metadata_path.unlink(missing_ok=True)
+        with one_click_runs_lock:
+            one_click_runs.pop(run.run_id, None)
     for metadata_path in JOBS_DIR.glob("*.json"):
         job = JobRecord.from_storage(_json_read(metadata_path) or {})
         if job is None or (job.image_id not in expired_images and not _safe_iso_before_now(job.expires_at)):
@@ -2078,7 +2348,12 @@ def _evaluate_agent_run(run: AgentRun, record: ImageRecord, job: JobRecord) -> N
 
 @app.get("/api/grounding/status")
 def grounding_status() -> Any:
-    return jsonify({"configured": grounder.configured, "provider": "Alibaba Cloud Model Studio", "model": grounder.model if grounder.configured else None})
+    return jsonify({
+        "configured": grounder.configured,
+        "one_click_configured": edit_planner.configured,
+        "provider": "Alibaba Cloud Model Studio",
+        "model": grounder.model if grounder.configured else None,
+    })
 
 
 @app.post("/api/ground")
@@ -2270,6 +2545,199 @@ def evaluate_agent_run(agent_id: str) -> Any:
     return jsonify(public)
 
 
+def _one_click_has_visible_effect(plan: OneClickEditPlan) -> bool:
+    settings = plan.as_edit_settings()
+    return bool(
+        settings["background_mode"] != "original"
+        or settings["edge_offset"]
+        or settings["feather_px"]
+        or settings["subject_brightness"]
+        or settings["subject_saturation"]
+        or settings["subject_blur_px"]
+    )
+
+
+def _select_one_click_candidate(proposal: GroundingProposal) -> int | None:
+    if not proposal.candidates:
+        return None
+    index, candidate = max(
+        enumerate(proposal.candidates),
+        key=lambda item: (item[1].confidence, -item[0]),
+    )
+    return index if candidate.confidence >= ONE_CLICK_MIN_GROUNDING_CONFIDENCE else None
+
+
+@app.post("/api/one-click-runs")
+def create_one_click_run() -> Any:
+    """Plan, locate and queue one local edit from a single user instruction."""
+    started_at = time.perf_counter()
+    owner_id = _current_owner()
+    limited = _limit_or_error(owner_id, "one_click_edit", 12, 24 * 60 * 60)
+    if limited is not None:
+        return limited
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error("请提交 JSON 请求。", 400)
+    try:
+        record = _require_record(payload.get("image_id"))
+        instruction = _parse_description(payload.get("instruction"))
+        if instruction is None:
+            raise ValueError("请写下你想完成的图片编辑效果。")
+    except ValueError as error:
+        return _json_error(str(error), 400)
+
+    run = OneClickRun(
+        run_id=uuid.uuid4().hex,
+        image_id=record.image_id,
+        owner_id=owner_id,
+        instruction=instruction,
+        created_at=_utc_now(),
+        expires_at=record.expires_at,
+        phase="planning",
+        message="Qwen 正在理解你的剪辑需求。",
+    )
+    if not edit_planner.configured or not grounder.configured:
+        run.phase = "failed"
+        run.message = "智能理解尚未配置；你仍可使用下方的手动分割和选区编辑。"
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+
+    try:
+        plan = edit_planner.plan(_load_rgb(record), instruction)
+    except GroundingError as error:
+        app.logger.warning("One-click edit planning failed: %s", error)
+        run.phase = "failed"
+        run.message = "Qwen 暂时无法理解这次需求。图片和文字已保留，请稍后重试或使用手动编辑。"
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+    except Exception:
+        app.logger.exception("Unexpected one-click edit planning failure")
+        run.phase = "failed"
+        run.message = "智能剪辑暂时不可用。图片和文字已保留，你可以使用手动编辑。"
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+
+    run.plan = plan.as_storage()
+    if plan.status == "unsupported":
+        run.phase = "unsupported"
+        run.message = plan.summary
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+    if plan.status != "ready" or not plan.target or not _one_click_has_visible_effect(plan):
+        run.phase = "needs_input"
+        run.message = plan.summary if plan.status == "needs_input" else "我还需要一个明确的主体和编辑效果，例如“保留左边的人，背景虚化并提亮”。"
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+
+    try:
+        grounding = _create_grounding_record(record, plan.target, owner_id)
+        selected_index = _select_one_click_candidate(grounding.proposal)
+        if selected_index is None:
+            run.phase = "needs_input"
+            run.message = f"我理解了你的效果，但没有可靠定位到「{plan.target}」。请把主体描述得更具体，或改用手动编辑。"
+            _save_one_click_run(run)
+            _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+            return jsonify(_one_click_public(run, record)), 201
+        prompt = _serialize_prompt(
+            record,
+            {
+                "image_id": record.image_id,
+                "description": plan.target,
+                "points": [],
+                "box": _agent_candidate_box(record, grounding, selected_index),
+                "grounding_id": grounding.grounding_id,
+                "grounding_candidate_index": selected_index,
+            },
+        )
+        job = _enqueue_segment_job(record, owner_id, prompt)
+    except queue.Full:
+        _record_metric("one_click_edit", owner_id=owner_id, status="queue_full", duration_ms=(time.perf_counter() - started_at) * 1000)
+        return _json_error("本地任务队列已满，请等待一个任务完成后再试。", 503, 5)
+    except GroundingError as error:
+        app.logger.warning("One-click grounding failed: %s", error)
+        run.phase = "failed"
+        run.message = "Qwen 暂时无法定位要编辑的主体。图片和需求已保留，请稍后重试或使用手动编辑。"
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+    except ValueError as error:
+        run.phase = "failed"
+        run.message = str(error)
+        _save_one_click_run(run)
+        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+        return jsonify(_one_click_public(run, record)), 201
+
+    selected = grounding.proposal.candidates[selected_index]
+    selected_label = selected.label or plan.target
+    run.grounding_id = grounding.grounding_id
+    run.selected_candidate_index = selected_index
+    run.job_id = job.job_id
+    run.phase = "segmenting"
+    run.message = f"已自动选择「{selected_label}」，正在由本地 SAM2 生成精确选区。"
+    _save_one_click_run(run)
+    _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+    public = _one_click_public(run, record)
+    return jsonify(public), 202
+
+
+@app.get("/api/one-click-runs/<run_id>")
+def one_click_run_status(run_id: str) -> Any:
+    run = _require_one_click_run(run_id)
+    record = _require_record(run.image_id)
+    _refresh_one_click_run(run, record)
+    return jsonify(_one_click_public(run, record))
+
+
+@app.post("/api/one-click-runs/<run_id>/apply")
+def apply_one_click_run(run_id: str) -> Any:
+    """Apply a stored plan exactly once after the owned SAM2 job succeeds."""
+    started_at = time.perf_counter()
+    owner_id = _current_owner()
+    with one_click_execution_lock:
+        run = _require_one_click_run(run_id)
+        record = _require_record(run.image_id)
+        _refresh_one_click_run(run, record)
+        if run.phase != "ready_to_apply":
+            return _json_error("当前一键剪辑还不能合成结果。", 409)
+        plan = _one_click_plan(run)
+        if plan is None or plan.status != "ready" or run.result_id is None:
+            run.phase = "failed"
+            run.message = "一键剪辑计划已失效，请重新执行。"
+            _save_one_click_run(run)
+            return _json_error(run.message, 409)
+        result_dir = _require_owned_result(run.result_id, record)
+        run.phase = "composing"
+        run.message = "正在按原图尺寸合成一键剪辑结果。"
+        _save_one_click_run(run)
+        try:
+            edit = _render_local_edit(record, result_dir, plan.as_edit_settings())
+        except ValueError as error:
+            run.phase = "failed"
+            run.message = str(error)
+            _save_one_click_run(run)
+            _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+            return _json_error(run.message, 400)
+        except Exception:
+            app.logger.exception("Unexpected one-click composition failure")
+            run.phase = "failed"
+            run.message = "本地合成一键剪辑结果时出现问题，请重新执行或使用手动编辑。"
+            _save_one_click_run(run)
+            _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
+            return _json_error(run.message, 502)
+        run.edit = edit
+        run.phase = "completed"
+        run.message = plan.summary
+        _save_one_click_run(run)
+
+    _record_metric("one_click_edit", owner_id=owner_id, status="completed", duration_ms=(time.perf_counter() - started_at) * 1000)
+    return jsonify(_one_click_public(run, record)), 201
+
+
 def _create_segment_job() -> Any:
     owner_id = _current_owner()
     limited = _limit_or_error(owner_id, "segment", 36, 60 * 60)
@@ -2326,21 +2794,7 @@ def create_edit() -> Any:
         record = _require_record(payload.get("image_id"))
         result_dir = _require_owned_result(payload.get("result_id"), record)
         settings = _parse_edit_settings(payload, record)
-        mask = _load_result_mask(result_dir, record)
-        mask = apply_mask_strokes(mask, settings["strokes"])
-        mask = refine_mask(mask, edge_offset=settings["edge_offset"], cleanup=settings["cleanup"])
-        rendered = compose_edit(
-            _load_rgb(record),
-            mask,
-            background_mode=settings["background_mode"],
-            background_color=_rgb_color(settings["background_color"]),
-            background_blur_px=settings["background_blur_px"],
-            subject_brightness=settings["subject_brightness"],
-            subject_saturation=settings["subject_saturation"],
-            subject_blur_px=settings["subject_blur_px"],
-            feather_px=settings["feather_px"],
-        )
-        public = _write_edit_artifacts(result_dir, record, settings, mask, rendered)
+        public = _render_local_edit(record, result_dir, settings)
     except ValueError as error:
         return _json_error(str(error), 400)
     _record_metric("image_edit", owner_id=owner_id, duration_ms=(time.perf_counter() - started_at) * 1000)

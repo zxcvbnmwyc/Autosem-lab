@@ -404,6 +404,16 @@ textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(24, 109,
 .primary-actions .button { width: 100%; }
 .engine-note { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .engine-note--ready { color: var(--green); font-weight: 700; }
+.one-click-note { margin: 9px 0 0; color: var(--muted-light); font-size: 10px; line-height: 1.55; }
+.one-click-panel { margin-top: 12px; padding: 12px; border: 1px solid #9ecfb1; border-radius: 10px; background: linear-gradient(145deg, #f3fbf5, #fbfdf9); }
+.one-click-panel--needs-input { border-color: #e3c86f; background: #fffcf2; }
+.one-click-panel--unsupported, .one-click-panel--failed { border-color: #efc5c6; background: #fff7f7; }
+.one-click-panel--completed { border-color: #afd5ba; background: #f0faf3; }
+.one-click-panel__top { display: flex; align-items: center; gap: 8px; }
+.one-click-panel__top > div { min-width: 0; }
+.one-click-panel__top p { margin: 0; color: var(--muted-light); font-size: 9px; font-weight: 850; letter-spacing: .08em; }
+.one-click-panel__top h3 { margin: 2px 0 0; color: var(--ink-soft); font-size: 12px; letter-spacing: -.01em; }
+.one-click-plan { margin: 8px 0 0; padding: 8px 9px; border-radius: 7px; color: #315e43; background: rgba(216, 239, 224, .72); font-size: 10px; font-weight: 700; line-height: 1.5; }
 
 .agent-panel { margin-top: 12px; padding: 12px; border: 1px solid #c7ddd0; border-radius: 10px; background: #f6fbf7; }
 .agent-panel--needs-choice, .agent-panel--needs-confirmation { border-color: #e3c86f; background: #fffcf2; }

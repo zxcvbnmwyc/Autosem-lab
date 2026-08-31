@@ -10,7 +10,9 @@ from grounding import (
     GroundingError,
     _data_url_for_image,
     _model_request,
+    _one_click_edit_request,
     _model_response_text,
+    parse_one_click_edit_plan,
     parse_grounding_payload,
 )
 
@@ -143,6 +145,41 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(parts[0]["type"], "image_url")
         self.assertEqual(parts[0]["image_url"]["url"], "data:image/jpeg;base64,abc")
         self.assertEqual(parts[1]["text"], "Target description: blue cup")
+
+    def test_one_click_plan_accepts_only_local_editing_settings(self) -> None:
+        plan = parse_one_click_edit_plan(
+            {
+                "status": "ready",
+                "target": "the blue cup",
+                "selection": {"edge_offset": 1, "feather_px": 2, "cleanup": True},
+                "background": {"mode": "color", "color": "#F0EDEA", "blur_px": 18},
+                "subject": {"brightness": 8, "saturation": -2, "blur_px": 0},
+                "summary": "保留蓝色杯子，换成浅色背景。",
+            }
+        )
+        self.assertEqual(plan.target, "the blue cup")
+        self.assertEqual(plan.as_edit_settings()["background_color"], "#f0edea")
+        self.assertEqual(plan.as_edit_settings()["subject_brightness"], 8)
+
+    def test_one_click_plan_rejects_unknown_background_mode(self) -> None:
+        with self.assertRaises(GroundingError):
+            parse_one_click_edit_plan(
+                {
+                    "status": "ready",
+                    "target": "cup",
+                    "selection": {},
+                    "background": {"mode": "replace", "color": "#ffffff", "blur_px": 18},
+                    "subject": {},
+                    "summary": "replace it",
+                }
+            )
+
+    def test_one_click_request_is_json_non_thinking_and_uses_image(self) -> None:
+        request = _one_click_edit_request("data:image/jpeg;base64,abc", "make the cup pop", "qwen3-vl-flash")
+        self.assertFalse(request["enable_thinking"])
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+        self.assertIn("non-generative", request["messages"][0]["content"])
+        self.assertEqual(request["messages"][1]["content"][0]["image_url"]["url"], "data:image/jpeg;base64,abc")
 
     def test_image_is_encoded_as_a_jpeg_data_url(self) -> None:
         image = np.zeros((20, 30, 3), dtype=np.uint8)

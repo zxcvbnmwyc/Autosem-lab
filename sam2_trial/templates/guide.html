@@ -20,6 +20,7 @@
       <aside class="document-toc" aria-label="本页目录">
         <span>使用指南</span>
         <a href="#start">开始前</a>
+        <a href="#one-click">一键剪辑</a>
         <a href="#auto">自动定位</a>
         <a href="#manual">手动提示</a>
         <a href="#edit">选区编辑</a>
@@ -28,7 +29,7 @@
       <article class="document-content">
         <p class="eyebrow">GUIDE</p>
         <h1>把模糊的“想要”，<br>变成清晰的轮廓。</h1>
-        <p class="document-lead">AutoSEM 的核心流程很简单：上传图片 → 给出目标 → 检查提示 → 生成选区 → 局部编辑并导出。自动定位能节省时间，手动提示让你在需要时收紧结果。</p>
+        <p class="document-lead">AutoSEM 的核心流程很简单：上传图片 → 用一句话描述效果 → 生成选区 → 局部编辑并导出。一键剪辑能自动串联流程，手动提示让你在需要时收紧结果。</p>
 
         <section id="start">
           <span class="content-step">01</span>
@@ -37,8 +38,15 @@
           <div class="guide-note"><strong>一个实用原则</strong><span>把目标说成“位置 + 外观 + 对象”。例如“左下角的蓝色杯子”通常比“杯子”更容易定位。</span></div>
         </section>
 
-        <section id="auto">
+        <section id="one-click">
           <span class="content-step">02</span>
+          <h2>一句话一键剪辑</h2>
+          <p>例如输入“保留左边的人物，背景虚化并稍微提亮”，Qwen 会将文字转换为受限的本地编辑计划，自动定位主体，再由 SAM2 生成像素级选区并合成结果。整个过程只需点击一次。</p>
+          <div class="guide-note"><strong>当前可自动完成</strong><span>抠主体、透明/纯色/虚化背景、边缘优化，以及主体亮度、饱和度和轻微模糊。删除路人、替换物体、扩图等生成式修改暂未接入。</span></div>
+        </section>
+
+        <section id="auto">
+          <span class="content-step">03</span>
           <h2>使用自动定位</h2>
           <p>填写描述后，可以选择两种方式：</p>
           <div class="guide-options">
@@ -49,7 +57,7 @@
         </section>
 
         <section id="manual">
-          <span class="content-step">03</span>
+          <span class="content-step">04</span>
           <h2>用点和框细化</h2>
           <div class="prompt-guide">
             <div><span class="prompt-dot prompt-dot--positive"></span><b>包含点</b><p>点在你希望保留的目标内部。主体中心通常是最有效的第一个点。</p></div>
@@ -60,7 +68,7 @@
         </section>
 
         <section id="edit">
-          <span class="content-step">04</span>
+          <span class="content-step">05</span>
           <h2>把选区变成局部编辑</h2>
           <p>轮廓完成后，工作台会进入选区编辑阶段。你可以在中央画布补画需要保留的区域，或擦掉误选区域；这些笔刷只会在最终导出时作用于服务端保存的原始 SAM2 mask，不会降低图片分辨率。</p>
           <div class="guide-options">
@@ -70,7 +78,7 @@
         </section>
 
         <section id="result">
-          <span class="content-step">05</span>
+          <span class="content-step">06</span>
           <h2>结果与导出</h2>
           <p>提交后，任务会显示排队或运行状态。CPU 推理的时间会随图片大小、提示数量和本机配置变化，因此工作台不会承诺固定用时。</p>
           <ul>
