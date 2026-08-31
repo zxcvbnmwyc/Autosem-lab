@@ -565,6 +565,8 @@ def _one_click_edit_request(
         "put effects into target because it will be sent to a separate grounding step. "
         "Only set effects explicitly requested by the user; choose the most literal "
         "setting matching the instruction and convert named colors to #RRGGBB. "
+        "例如“保留奶酪，背景变白”是明确可执行的请求：使用 "
+        "background.mode=color、color=#ffffff、blur_px=0。 "
         "Return exactly this JSON shape: "
         '{"status":"ready|needs_input|unsupported","target":string|null,'
         '"selection":{"edge_offset":integer,"feather_px":integer,"cleanup":boolean},'

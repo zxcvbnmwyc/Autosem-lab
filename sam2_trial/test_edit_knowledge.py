@@ -26,6 +26,21 @@ class EditingKnowledgeTests(unittest.TestCase):
             .issubset({card["id"] for card in payload["retrieved_capabilities"]})
         )
 
+    def test_background_becomes_white_retrieves_and_allows_solid_color(self) -> None:
+        retrieval = retrieve_editing_knowledge("保留奶酪，背景变白")
+        self.assertEqual(retrieval.matched_operation_ids, ("background.color",))
+        plan = OneClickEditPlan(
+            status="ready",
+            target="奶酪",
+            selection={"edge_offset": 0, "feather_px": 0, "cleanup": True},
+            background={"mode": "color", "color": "#ffffff", "blur_px": 0},
+            subject={"brightness": 0, "saturation": 0, "blur_px": 0},
+            summary="保留奶酪，背景变白。",
+        )
+        safe_plan = _constrain_plan_to_retrieved_capabilities(plan, retrieval)
+        self.assertEqual(safe_plan.status, "ready")
+        self.assertEqual(safe_plan.background, {"mode": "color", "color": "#ffffff", "blur_px": 0})
+
     def test_catalog_change_updates_retrieval_without_code_change(self) -> None:
         source = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
         transparent = next(card for card in source["operations"] if card["id"] == "background.transparent")

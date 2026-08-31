@@ -227,6 +227,8 @@ class GroundingTests(unittest.TestCase):
         self.assertIn('status="needs_input"', system["content"])
         self.assertIn('status="unsupported"', system["content"])
         self.assertIn("non-generative", system["content"])
+        self.assertIn("保留奶酪，背景变白", system["content"])
+        self.assertIn("background.mode=color", system["content"])
         self.assertIn('"catalog_version"', system["content"])
         self.assertNotIn(instruction, system["content"])
         self.assertEqual(request["messages"][1]["content"][0]["image_url"]["url"], "data:image/jpeg;base64,abc")
