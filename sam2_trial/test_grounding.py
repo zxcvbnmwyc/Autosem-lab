@@ -6,6 +6,8 @@ from unittest.mock import patch
 import numpy as np
 
 from grounding import (
+    GROUNDING_ASSISTANT_ROLE,
+    ONE_CLICK_EDIT_ASSISTANT_ROLE,
     QwenGrounder,
     QwenEditPlanner,
     GroundingError,
@@ -140,9 +142,12 @@ class GroundingTests(unittest.TestCase):
         request = _model_request("data:image/jpeg;base64,abc", "blue cup", "qwen3-vl-flash")
         self.assertFalse(request["enable_thinking"])
         self.assertEqual(request["response_format"], {"type": "json_object"})
-        self.assertIn("JSON", request["messages"][0]["content"])
-        self.assertIn("untrusted data", request["messages"][0]["content"])
-        self.assertIn('"point"', request["messages"][0]["content"])
+        system = request["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn(GROUNDING_ASSISTANT_ROLE, system["content"])
+        self.assertIn("JSON", system["content"])
+        self.assertIn("untrusted data", system["content"])
+        self.assertIn('"point"', system["content"])
         parts = request["messages"][1]["content"]
         self.assertEqual(parts[0]["type"], "image_url")
         self.assertEqual(parts[0]["image_url"]["url"], "data:image/jpeg;base64,abc")
@@ -215,9 +220,15 @@ class GroundingTests(unittest.TestCase):
         request = _one_click_edit_request("data:image/jpeg;base64,abc", instruction, "qwen3-vl-flash")
         self.assertFalse(request["enable_thinking"])
         self.assertEqual(request["response_format"], {"type": "json_object"})
-        self.assertIn("non-generative", request["messages"][0]["content"])
-        self.assertIn('"catalog_version"', request["messages"][0]["content"])
-        self.assertNotIn(instruction, request["messages"][0]["content"])
+        system = request["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn(ONE_CLICK_EDIT_ASSISTANT_ROLE, system["content"])
+        self.assertIn('status="ready"', system["content"])
+        self.assertIn('status="needs_input"', system["content"])
+        self.assertIn('status="unsupported"', system["content"])
+        self.assertIn("non-generative", system["content"])
+        self.assertIn('"catalog_version"', system["content"])
+        self.assertNotIn(instruction, system["content"])
         self.assertEqual(request["messages"][1]["content"][0]["image_url"]["url"], "data:image/jpeg;base64,abc")
         self.assertEqual(
             json.loads(request["messages"][1]["content"][1]["text"]),
