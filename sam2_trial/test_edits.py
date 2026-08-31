@@ -86,7 +86,7 @@ class EditApiTests(unittest.TestCase):
                     "feather_px": 2,
                     "cleanup": True,
                 },
-                "background": {"mode": "transparent", "color": "#ffffff", "blur_px": 18},
+                "background": {"mode": "transparent", "color": "#ffffff", "blur_px": 0},
                 "subject": {"brightness": 10, "saturation": 0, "blur_px": 0},
             },
         )
@@ -94,6 +94,7 @@ class EditApiTests(unittest.TestCase):
         edited = response.get_json()
         self.assertIn("download_url", edited)
         self.assertEqual(edited["settings"]["background_mode"], "transparent")
+        self.assertEqual(edited["settings"]["background_blur_px"], 0)
         artifact = self.client.get(edited["download_url"])
         self.assertEqual(artifact.status_code, 200)
         self.assertEqual(artifact.mimetype, "image/png")

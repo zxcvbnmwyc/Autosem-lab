@@ -49,7 +49,8 @@ RUN groupadd --gid 10001 app \
     && chown --recursive app:app /app
 
 WORKDIR /app
-COPY --chown=app:app app.py contours.py grounding.py mask_editing.py ./
+COPY --chown=app:app app.py contours.py grounding.py mask_editing.py edit_knowledge.py ./
+COPY --chown=app:app knowledge ./knowledge
 COPY --chown=app:app templates ./templates
 COPY --chown=app:app static ./static
 

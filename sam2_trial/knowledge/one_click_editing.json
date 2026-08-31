@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "catalog_version": "2026-08-31",
+  "retrieval_limit": 4,
+  "always_include": [
+    {
+      "id": "subject.single_visible",
+      "aliases": [],
+      "scope": "automatic",
+      "rule": "一次自动执行只能处理一个画面中可见、可定位的主体。主体不明确、主体不存在或有多个同样合理的主体时，返回 needs_input；不要猜测。"
+    },
+    {
+      "id": "policy.non_generative",
+      "aliases": [],
+      "scope": "policy",
+      "rule": "这是本地非生成式编辑器：不能删除物体后补全背景、添加或替换物体、生成或更换场景、扩图、裁剪、旋转、加文字、拼图、美颜或应用全图风格。此类需求必须返回 unsupported，不能偷偷改成别的效果。"
+    },
+    {
+      "id": "response.contract",
+      "aliases": [],
+      "scope": "policy",
+      "rule": "只能返回规定的 JSON 字段和数值范围。未被用户明确要求的效果保持默认值；非 ready 状态使用安全默认设置。"
+    }
+  ],
+  "operations": [
+    {
+      "id": "selection.edge_feather",
+      "aliases": ["边缘", "羽化", "柔和边缘", "收缩边缘", "扩大选区", "去毛边", "边缘干净"],
+      "scope": "automatic",
+      "rule": "可小幅调整主体选区的 edge_offset（-20 到 20）与 feather_px（0 到 16），并可开启 cleanup。不能用它伪造或重画主体。"
+    },
+    {
+      "id": "selection.manual_strokes",
+      "aliases": ["画笔", "涂抹", "补选区", "擦除选区", "手动修", "手动调整"],
+      "scope": "manual_only",
+      "rule": "网站提供手动添加或擦除选区笔画，但一键模式不会编造笔画坐标。若需求必须依赖手动笔画，返回 needs_input，并说明可在结果页继续手动细化。"
+    },
+    {
+      "id": "background.original",
+      "aliases": ["保留原背景", "原背景", "不要改背景", "背景不变"],
+      "scope": "automatic",
+      "rule": "保留原背景时使用 background.mode=original，background.blur_px 必须为 0。"
+    },
+    {
+      "id": "background.transparent",
+      "aliases": ["透明背景", "背景透明", "透明底", "透明png", "透明 png", "去背景", "背景去除", "移除背景", "抠图", "抠出主体"],
+      "scope": "automatic",
+      "rule": "导出透明背景时使用 background.mode=transparent，background.blur_px 必须为 0；这不是删除主体或补全背景。"
+    },
+    {
+      "id": "background.color",
+      "aliases": ["白底", "白色背景", "纯色背景", "红底", "蓝底", "黑底", "换成白色背景", "换白色背景"],
+      "scope": "automatic",
+      "rule": "更换为明确的纯色背景时使用 background.mode=color，并把颜色转换为 #RRGGBB；background.blur_px 必须为 0。无法从文字确定颜色时返回 needs_input。"
+    },
+    {
+      "id": "background.blur",
+      "aliases": ["背景虚化", "虚化背景", "背景模糊", "模糊背景", "景深"],
+      "scope": "automatic",
+      "rule": "虚化背景时使用 background.mode=blur，background.blur_px 只能是 1 到 40 的整数；不虚化时不能保留背景模糊值。"
+    },
+    {
+      "id": "subject.brightness",
+      "aliases": ["提亮", "变亮", "亮一点", "暗一点", "降低亮度", "增加亮度"],
+      "scope": "automatic",
+      "rule": "可仅对主体设置 brightness（-60 到 60）。未明确要求亮度时保持 0，不能把它当成全图滤镜。"
+    },
+    {
+      "id": "subject.saturation",
+      "aliases": ["饱和度", "鲜艳", "更鲜艳", "颜色淡一点", "颜色更淡", "去饱和"],
+      "scope": "automatic",
+      "rule": "可仅对主体设置 saturation（-60 到 60）。未明确要求颜色强度时保持 0，不能进行全图调色。"
+    },
+    {
+      "id": "subject.blur",
+      "aliases": ["柔焦", "主体模糊", "虚化主体", "柔化主体"],
+      "scope": "automatic",
+      "rule": "可仅对主体设置 blur_px（0 到 32）。它不能用于美颜、修皮肤或制造新细节。"
+    }
+  ]
+}

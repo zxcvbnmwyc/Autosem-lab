@@ -1484,9 +1484,21 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
     mode = background.get("mode", "original")
     if not isinstance(mode, str) or mode not in EDIT_BACKGROUND_MODES:
         raise ValueError("背景模式只能是 original、transparent、color 或 blur。")
-    color = background.get("color", "#ffffff")
-    if not isinstance(color, str) or not HEX_COLOR_RE.fullmatch(color):
-        raise ValueError("背景颜色必须是 #RRGGBB 格式。")
+    if mode == "color":
+        color = background.get("color")
+        if not isinstance(color, str) or not HEX_COLOR_RE.fullmatch(color):
+            raise ValueError("纯色背景必须是 #RRGGBB 格式。")
+    else:
+        color = "#ffffff"
+    if mode == "blur":
+        background_blur_px = _bounded_integer(
+            background.get("blur_px"), "背景模糊像素", 1, MAX_EDIT_BLUR, 18
+        )
+    else:
+        # This value is unused outside blur mode. Normalise it to zero so a
+        # transparent or solid-background edit cannot accidentally carry blur.
+        _bounded_integer(background.get("blur_px"), "背景模糊像素", 0, MAX_EDIT_BLUR, 0)
+        background_blur_px = 0
     cleanup = selection.get("cleanup", True)
     if not isinstance(cleanup, bool):
         raise ValueError("cleanup 必须是布尔值。")
@@ -1499,9 +1511,7 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
         "cleanup": cleanup,
         "background_mode": mode,
         "background_color": color.lower(),
-        "background_blur_px": _bounded_integer(
-            background.get("blur_px"), "背景模糊像素", 1, MAX_EDIT_BLUR, 18
-        ),
+        "background_blur_px": background_blur_px,
         "subject_brightness": _bounded_integer(subject.get("brightness"), "局部亮度", -80, 80, 0),
         "subject_saturation": _bounded_integer(subject.get("saturation"), "局部饱和度", -80, 80, 0),
         "subject_blur_px": _bounded_integer(subject.get("blur_px"), "局部模糊像素", 0, MAX_EDIT_BLUR, 0),
@@ -2351,6 +2361,7 @@ def grounding_status() -> Any:
     return jsonify({
         "configured": grounder.configured,
         "one_click_configured": edit_planner.configured,
+        "edit_knowledge_version": getattr(edit_planner, "knowledge_version", None),
         "provider": "Alibaba Cloud Model Studio",
         "model": grounder.model if grounder.configured else None,
     })
