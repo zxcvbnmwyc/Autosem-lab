@@ -41,10 +41,10 @@
         </aside>
       </section>
 
-      <section id="process-hub" class="process-hub process-hub--idle" aria-label="处理进程" aria-live="polite">
+      <section id="process-hub" class="process-hub process-hub--idle" aria-label="处理进程">
         <div class="process-hub__top">
           <div class="process-hub__identity">
-            <span class="process-mark" aria-hidden="true">✦</span>
+            <span class="process-mark" aria-hidden="true">⌖</span>
             <div>
               <p id="process-eyebrow">智能剪辑</p>
               <h2 id="process-title">准备开始</h2>
@@ -52,7 +52,7 @@
           </div>
           <span id="process-stage" class="process-stage">等待图片</span>
         </div>
-        <p id="process-message" class="process-message">上传一张图片后，描述要保留的对象和想做的处理。</p>
+        <p id="process-message" class="process-message" role="status" aria-live="polite" aria-atomic="true">上传一张图片后，描述要保留的对象和想做的处理。</p>
 
         <ol id="process-steps" class="process-steps" aria-label="处理步骤">
           <li data-process-step="1"><span aria-hidden="true">1</span><b>理解需求</b></li>
