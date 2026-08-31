@@ -278,6 +278,49 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(plan.status, "ready")
         self.assertEqual(plan.background["blur_px"], 0)
 
+    def test_edit_planner_keeps_white_background_plan_when_color_card_is_retrieved(self) -> None:
+        def fake_urlopen(request, timeout):
+            self.assertEqual(timeout, 5)
+            payload = json.loads(request.data.decode("utf-8"))
+            system = payload["messages"][0]["content"]
+            self.assertIn('"id":"background.color"', system)
+            self.assertIn("保留奶酪，背景变白", payload["messages"][1]["content"][1]["text"])
+            return _FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "status": "ready",
+                                        "target": "奶酪",
+                                        "selection": {"edge_offset": 0, "feather_px": 0, "cleanup": True},
+                                        "background": {"mode": "color", "color": "#FFFFFF", "blur_px": 0},
+                                        "subject": {"brightness": 0, "saturation": 0, "blur_px": 0},
+                                        "summary": "保留奶酪，背景变白。",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+        planner = QwenEditPlanner(
+            api_key="test-key",
+            base_url=(
+                "https://ws-jezurpmuo05q16c9.cn-beijing.maas.aliyuncs.com/"
+                "compatible-mode/v1"
+            ),
+            model="qwen3-vl-flash",
+            timeout_seconds=5,
+        )
+        with patch("grounding.urllib.request.urlopen", fake_urlopen):
+            plan = planner.plan(np.zeros((20, 30, 3), dtype=np.uint8), "保留奶酪，背景变白")
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.background, {"mode": "color", "color": "#ffffff", "blur_px": 0})
+
     def test_image_is_encoded_as_a_jpeg_data_url(self) -> None:
         image = np.zeros((20, 30, 3), dtype=np.uint8)
         result = _data_url_for_image(image)

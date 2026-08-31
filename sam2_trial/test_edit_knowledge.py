@@ -41,6 +41,10 @@ class EditingKnowledgeTests(unittest.TestCase):
         self.assertEqual(safe_plan.status, "ready")
         self.assertEqual(safe_plan.background, {"mode": "color", "color": "#ffffff", "blur_px": 0})
 
+    def test_subject_becomes_white_does_not_imply_a_background_change(self) -> None:
+        retrieval = retrieve_editing_knowledge("把奶酪变白")
+        self.assertNotIn("background.color", retrieval.matched_operation_ids)
+
     def test_catalog_change_updates_retrieval_without_code_change(self) -> None:
         source = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
         transparent = next(card for card in source["operations"] if card["id"] == "background.transparent")
