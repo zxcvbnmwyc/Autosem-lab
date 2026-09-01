@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_version": "2026-09-01.2",
+  "catalog_version": "2026-09-01.3",
   "retrieval_limit": 10,
   "always_include": [
     {
@@ -176,7 +176,7 @@
     },
     {
       "id": "effect.shadow",
-      "aliases": ["阴影", "投影", "加阴影", "柔和阴影", "主体投影", "悬浮感", "立体一点"],
+      "aliases": ["阴影", "投影", "加阴影", "加投影", "柔和阴影", "主体投影", "悬浮感", "悬浮效果", "立体一点", "立体感", "立体效果", "浮在背景上", "像贴纸一样浮起来", "下面有影子", "底下有影子", "shadow", "drop shadow", "cast shadow", "shadow underneath", "floating effect", "floating look", "look raised", "raised look", "lifted from the background", "3d effect", "3d look"],
       "scope": "automatic",
       "rule": "可添加确定性投影：shadow_offset_x/y（-80 到 80）、shadow_blur_px（0 到 80）、shadow_color 和 shadow_opacity（0 到 100）。未要求时全部关闭。"
     },

@@ -38,7 +38,10 @@ from contours import mask_to_contours
 from grounding import (
     GroundingCandidate,
     GroundingError,
+    GroundingProviderError,
     GroundingProposal,
+    GroundingSchemaError,
+    GroundingTransientError,
     OneClickEditPlan,
     QwenEditPlanner,
     QwenGrounder,
@@ -2436,24 +2439,47 @@ def uploaded_preview(image_id: str) -> Any:
     return _send_owned_media(UPLOAD_DIR, record.filename)
 
 
-def _create_grounding_record(record: ImageRecord, description: str, owner_id: str) -> GroundingRecord:
-    started = time.perf_counter()
-    try:
-        proposal = grounder.ground(_load_rgb(record), description)
-    except Exception:
+def _create_grounding_record(
+    record: ImageRecord,
+    description: str,
+    owner_id: str,
+    *,
+    retry_once: bool = False,
+) -> GroundingRecord:
+    image_rgb = _load_rgb(record)
+    proposal: GroundingProposal | None = None
+    attempts = 2 if retry_once else 1
+    for attempt in range(attempts):
+        started = time.perf_counter()
+        try:
+            proposal = grounder.ground(image_rgb, description)
+        except Exception as error:
+            will_retry = (
+                retry_once
+                and attempt == 0
+                and isinstance(error, (GroundingTransientError, GroundingSchemaError))
+            )
+            _record_metric(
+                "grounding",
+                owner_id=owner_id,
+                status="retrying" if will_retry else "failed",
+                duration_ms=(time.perf_counter() - started) * 1000,
+            )
+            if will_retry:
+                app.logger.warning(
+                    "Qwen grounding attempt failed; retrying once: %s", error
+                )
+                continue
+            raise
         _record_metric(
             "grounding",
             owner_id=owner_id,
-            status="failed",
+            status=proposal.status,
             duration_ms=(time.perf_counter() - started) * 1000,
         )
-        raise
-    _record_metric(
-        "grounding",
-        owner_id=owner_id,
-        status=proposal.status,
-        duration_ms=(time.perf_counter() - started) * 1000,
-    )
+        break
+    if proposal is None:  # Defensive: every unsuccessful path raises above.
+        raise GroundingError("自动定位没有返回结果。")
     grounding_record = GroundingRecord(
         grounding_id=uuid.uuid4().hex,
         image_id=record.image_id,
@@ -2467,6 +2493,20 @@ def _create_grounding_record(record: ImageRecord, description: str, owner_id: st
     with grounding_records_lock:
         grounding_records[grounding_record.grounding_id] = grounding_record
     return grounding_record
+
+
+def _grounding_failure_message(error: GroundingError, *, retried: bool) -> str:
+    if isinstance(error, GroundingSchemaError):
+        prefix = "Qwen 返回的定位结果格式异常"
+    elif isinstance(error, GroundingTransientError):
+        prefix = "Qwen 定位服务暂时不可用"
+    elif isinstance(error, GroundingProviderError):
+        return "Qwen 定位服务配置或权限异常；可改用手动编辑。"
+    else:
+        return "自动定位发生异常；可重试或手动编辑。"
+    if retried:
+        return f"{prefix}，自动重试后仍未成功；可重试或手动编辑。"
+    return f"{prefix}；可重试或手动编辑。"
 
 
 def _agent_phase_for_proposal(proposal: GroundingProposal) -> tuple[str, str, int | None]:
@@ -2595,10 +2635,12 @@ def ground() -> Any:
     if not grounder.configured:
         return _json_error("自动定位未配置；仍可手动选区。", 503)
     try:
-        grounding_record = _create_grounding_record(record, description, owner_id)
+        grounding_record = _create_grounding_record(
+            record, description, owner_id, retry_once=True
+        )
     except GroundingError as error:
         app.logger.warning("Qwen grounding failed: %s", error)
-        return _json_error("自动定位暂不可用，请稍后重试或手动选区。", 502)
+        return _json_error(_grounding_failure_message(error, retried=True), 502)
     except Exception:
         app.logger.exception("Unexpected Qwen grounding error")
         return _json_error("自动定位失败，请稍后重试或手动选区。", 502)
@@ -2964,7 +3006,9 @@ def create_one_click_run() -> Any:
         return jsonify(_one_click_public(run, record)), 201
 
     try:
-        grounding = _create_grounding_record(record, plan.target, owner_id)
+        grounding = _create_grounding_record(
+            record, plan.target, owner_id, retry_once=True
+        )
         selected_index = _select_one_click_candidate(grounding.proposal)
         run.grounding_id = grounding.grounding_id
         if selected_index is None:
@@ -2984,7 +3028,7 @@ def create_one_click_run() -> Any:
     except GroundingError as error:
         app.logger.warning("One-click grounding failed: %s", error)
         run.phase = "failed"
-        run.message = "未能定位主体，可重试或手动编辑。"
+        run.message = _grounding_failure_message(error, retried=True)
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201

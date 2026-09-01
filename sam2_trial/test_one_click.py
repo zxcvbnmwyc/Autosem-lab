@@ -9,7 +9,14 @@ import numpy as np
 from PIL import Image
 
 import app as application
-from grounding import GroundingCandidate, GroundingProposal, OneClickEditPlan
+from grounding import (
+    GroundingCandidate,
+    GroundingProviderError,
+    GroundingProposal,
+    GroundingSchemaError,
+    GroundingTransientError,
+    OneClickEditPlan,
+)
 
 
 class _Engine:
@@ -46,9 +53,12 @@ class _Grounder:
         self.calls: list[str] = []
         self.confidence = confidence
         self.proposal: GroundingProposal | None = None
+        self.failures: list[Exception] = []
 
     def ground(self, _image_rgb, description: str) -> GroundingProposal:
         self.calls.append(description)
+        if self.failures:
+            raise self.failures.pop(0)
         if self.proposal is not None:
             return self.proposal
         return GroundingProposal(
@@ -218,6 +228,83 @@ class OneClickEditApiTests(unittest.TestCase):
             self.assertEqual(output.size, (32, 24))
             self.assertEqual(output.mode, "RGBA")
         artifact.close()
+
+    def test_one_click_retries_schema_failure_once_then_continues(self) -> None:
+        self.grounder.failures = [
+            GroundingSchemaError("百炼返回的数据无法解析为候选框 JSON。")
+        ]
+        uploaded = self._upload()
+        started = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "保留这个杯子"},
+        )
+        self.assertEqual(started.status_code, 202)
+        run = started.get_json()
+        self.assertEqual(run["phase"], "segmenting")
+        self.assertEqual(self.grounder.calls, ["the cup", "the cup"])
+        ready = self._wait_until_ready(run["run_id"])
+        self.assertEqual(ready["phase"], "ready_to_apply")
+
+    def test_one_click_reports_retry_exhaustion_cause(self) -> None:
+        self.grounder.failures = [
+            GroundingTransientError("Qwen 请求超时，请稍后重试。"),
+            GroundingTransientError("Qwen 请求超时，请稍后重试。"),
+        ]
+        uploaded = self._upload()
+        response = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "保留这个杯子"},
+        )
+        self.assertEqual(response.status_code, 201)
+        run = response.get_json()
+        self.assertEqual(run["phase"], "failed")
+        self.assertEqual(
+            run["message"],
+            "Qwen 定位服务暂时不可用，自动重试后仍未成功；可重试或手动编辑。",
+        )
+        self.assertEqual(self.grounder.calls, ["the cup", "the cup"])
+        self.assertIsNone(run["job"])
+
+    def test_one_click_not_found_is_not_retried(self) -> None:
+        self.grounder.proposal = GroundingProposal("not_found", (), "target absent")
+        uploaded = self._upload()
+        response = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "保留这个杯子"},
+        )
+        self.assertEqual(response.status_code, 201)
+        run = response.get_json()
+        self.assertEqual(run["phase"], "needs_input")
+        self.assertIn("未能定位", run["message"])
+        self.assertEqual(self.grounder.calls, ["the cup"])
+        self.assertIsNone(run["job"])
+
+    def test_manual_grounding_api_retries_transient_failure_once(self) -> None:
+        self.grounder.failures = [
+            GroundingTransientError("Qwen 请求超时，请稍后重试。")
+        ]
+        uploaded = self._upload()
+        response = self.client.post(
+            "/api/ground",
+            json={"image_id": uploaded["image_id"], "description": "the cup"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "found")
+        self.assertEqual(self.grounder.calls, ["the cup", "the cup"])
+
+    def test_manual_grounding_api_does_not_retry_provider_configuration_error(self) -> None:
+        self.grounder.failures = [GroundingProviderError("invalid configuration")]
+        uploaded = self._upload()
+        response = self.client.post(
+            "/api/ground",
+            json={"image_id": uploaded["image_id"], "description": "the cup"},
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.get_json()["error"],
+            "Qwen 定位服务配置或权限异常；可改用手动编辑。",
+        )
+        self.assertEqual(self.grounder.calls, ["the cup"])
 
     def test_unsupported_request_never_enters_sam2_queue(self) -> None:
         self.planner.plan_value = _plan(status="unsupported", target=None)

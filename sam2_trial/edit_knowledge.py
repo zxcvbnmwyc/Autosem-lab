@@ -155,6 +155,35 @@ def _normalise(text: str) -> str:
     )
 
 
+def _operation_is_explicitly_negated(query: str, card_id: str) -> bool:
+    """Keep narrow execution gates from treating a negation as permission."""
+    if card_id != "effect.shadow":
+        return False
+    phrases = (
+        "不要阴影",
+        "不要投影",
+        "不加阴影",
+        "别加阴影",
+        "不需要阴影",
+        "去掉阴影",
+        "去除阴影",
+        "移除阴影",
+        "取消阴影",
+        "关闭阴影",
+        "无阴影",
+        "没有阴影",
+        "不要悬浮感",
+        "不要立体感",
+        "no shadow",
+        "without shadow",
+        "remove shadow",
+        "disable shadow",
+        "do not add shadow",
+        "don't add shadow",
+    )
+    return any(_normalise(phrase) in query for phrase in phrases)
+
+
 def _text(value: Any, field: str, maximum: int, *, minimum: int = 1) -> str:
     if not isinstance(value, str):
         raise KnowledgeError(f"知识库中的 {field} 必须是文字。")
@@ -248,6 +277,8 @@ def retrieve_editing_knowledge(
     ranked: list[tuple[int, int, CapabilityCard]] = []
     for index, card in enumerate(catalog.operations):
         matches = [alias for alias in card.aliases if _normalise(alias) in query]
+        if matches and _operation_is_explicitly_negated(query, card.card_id):
+            matches = []
         if matches:
             # Longer matching phrases beat generic vocabulary, while catalog
             # order gives stable ties.

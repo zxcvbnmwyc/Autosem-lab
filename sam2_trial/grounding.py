@@ -168,6 +168,18 @@ class GroundingError(RuntimeError):
     """A safe, user-facing failure from the visual grounding layer."""
 
 
+class GroundingProviderError(GroundingError):
+    """A non-retryable configuration, permission or provider failure."""
+
+
+class GroundingTransientError(GroundingProviderError):
+    """A short-lived provider failure that may succeed on one retry."""
+
+
+class GroundingSchemaError(GroundingError):
+    """A model response that did not satisfy the grounding JSON contract."""
+
+
 @dataclass(frozen=True)
 class OneClickEditPlan:
     """A validated, declarative plan for AutoSEM's local editing tools.
@@ -694,8 +706,8 @@ def _constrain_plan_to_retrieved_capabilities(
     """
     if plan.status != "ready":
         return plan
-    _ = retrieval
     available = AUTOMATIC_OPERATION_CARD_IDS
+    explicitly_requested = frozenset(retrieval.matched_operation_ids)
     background_mode = str(plan.background["mode"])
     if background_mode != "original" and f"background.{background_mode}" not in available:
         # A background choice changes the primary result. Do not silently
@@ -750,7 +762,10 @@ def _constrain_plan_to_retrieved_capabilities(
         changed = changed or bool(effects["outline_width_px"] or effects["outline_opacity"])
         effects["outline_width_px"] = 0
         effects["outline_opacity"] = 0
-    if "effect.shadow" not in available:
+    # Shadow is decorative and especially prone to semantic overreach (for
+    # example interpreting Chinese "弄出来" as the English idiom "pop out").
+    # Require an explicit shadow/floating/3D phrase from the trusted catalog.
+    if "effect.shadow" not in available or "effect.shadow" not in explicitly_requested:
         changed = changed or bool(
             effects["shadow_offset_x"]
             or effects["shadow_offset_y"]
@@ -827,7 +842,7 @@ def _model_request(
     image_data_url: str, description: str, model: str
 ) -> dict[str, Any]:
     system = (
-        f"You are {GROUNDING_ASSISTANT_ROLE} for a photo-editing workflow. "
+        f"You are {GROUNDING_ASSISTANT_ROLE} for an image-editing workflow. "
         "Your only job is to locate the visible subject named by the editing "
         "request so SAM2 can refine its outline; do not edit, invent, or "
         "describe pixels. "
@@ -843,6 +858,15 @@ def _model_request(
         '"point":{"x":number,"y":number}|null}],"note":string|null}. '
         "Choose at most three tight boxes. If the target is absent, return "
         "status not_found and an empty boxes array. "
+        "The input may be a photograph, scan, diagram, or grayscale scientific "
+        "microscopy image such as SEM or TEM. In microscopy images, a target may "
+        "be an enclosed region, cell, organelle, particle, aggregate, or an "
+        "approximately geometric structure rather than an everyday object. Use "
+        "the target's spatial position, boundary contrast, shape, and texture; "
+        "do not require photographic object semantics. Do not select scale bars, "
+        "labels, arrows, captions, or other annotations unless they are explicitly "
+        "named as the target. Enclose the whole requested structure, including its "
+        "visible boundary, in each box. "
         "For each found object, return point only when you can place it clearly "
         "inside the visible target and away from its boundary; otherwise use null. "
         "Do not claim pixel-perfect contours; SAM2 will refine the prompt."
@@ -919,13 +943,20 @@ def _one_click_edit_request(
         "grayscale false. Subject opacity below 100 is valid only with transparent, color, or blur background; "
         "when opacity is requested without a compatible background, choose transparent rather than asking another question. "
         "For color mode, use #RRGGBB; if a clean solid background is requested without an exact color, use neutral white. Otherwise use #ffffff. Target must be a concise visual "
-        "referring expression for one visible subject, such as \"左侧穿蓝外套的人\"; do not "
+        "referring expression for one visible subject, such as \"左侧穿蓝外套的人\". Use the "
+        "image to preserve useful location, shape, boundary, contrast, color, or texture cues. "
+        "For scientific or microscopy images, expand an abstract phrase such as \"圆形体\" "
+        "with only the most useful position, boundary, contrast, shape, or texture cues that "
+        "are actually visible in the current image. Preserve the user's original target concept; "
+        "never copy example cues, narrow it to a different structure, or invent a cue. Do not "
         "put effects into target because it will be sent to a separate grounding step. "
         "理解同义表达、口语、审美描述、标点和语序变化，按用户想达到的视觉结果映射到本地能力；"
         "不要要求用户复述能力卡或直接说出 brightness、shadow 等字段。没有强度时选择克制的中等值。"
         "例如“更突出/更醒目/聚焦商品”可映射为背景虚化 18、主体亮度 +8；"
         "“更清楚/更有质感”可保守映射为主体锐化 8、对比度 +6；"
         "“有悬浮感/立体一点”可映射为垂直阴影 8、模糊 12、不透明度 35。"
+        "只有用户明确要求阴影、投影、悬浮感、立体效果、shadow 或 3D effect 时才可设置 shadow；"
+        "“弄出来”“抠出来”“提取出来”“单独拿出来”只表示识别、分割或导出主体，绝不表示阴影、悬浮或立体。"
         "不要为纯主体输入凭空添加这些效果。按最直接的含义选择设置，并把明确颜色转换为 #RRGGBB。 "
         "例如“保留奶酪，背景变白”是明确可执行的请求：使用 "
         "background.mode=color、color=#ffffff、blur_px=0。 "
@@ -1048,7 +1079,7 @@ class QwenGrounder:
             or parsed.fragment
             or parsed.path != "/compatible-mode/v1"
         ):
-            raise GroundingError(
+            raise GroundingProviderError(
                 "DASHSCOPE_BASE_URL 必须是阿里云百炼的 HTTPS "
                 "OpenAI 兼容地址，且以 /compatible-mode/v1 结尾。"
             )
@@ -1079,7 +1110,7 @@ class QwenGrounder:
     def ground(self, image_rgb: np.ndarray, description: str) -> GroundingProposal:
         api_key = self._api_key_value()
         if not api_key:
-            raise GroundingError(
+            raise GroundingProviderError(
                 "尚未配置 DASHSCOPE_API_KEY。请联系网站管理员完成服务器端模型配置。"
             )
 
@@ -1103,27 +1134,32 @@ class QwenGrounder:
                 response_body = response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
             if error.code in {401, 403}:
-                raise GroundingError(
+                raise GroundingProviderError(
                     "百炼鉴权失败，请确认 API Key 属于这个北京业务空间且模型已开通。"
                 ) from error
             if error.code == 429:
-                raise GroundingError("百炼当前限流，请稍后重试。") from error
-            raise GroundingError(
+                raise GroundingTransientError("百炼当前限流，请稍后重试。") from error
+            if 500 <= error.code <= 599:
+                raise GroundingTransientError(
+                    f"百炼接口暂时不可用（HTTP {error.code}）。"
+                ) from error
+            raise GroundingProviderError(
                 f"百炼接口暂时不可用（HTTP {error.code}）。"
             ) from error
         except urllib.error.URLError as error:
-            raise GroundingError("无法连接阿里云百炼，请检查网络和服务地址。") from error
+            raise GroundingTransientError("无法连接阿里云百炼，请检查网络和服务地址。") from error
         except TimeoutError as error:
-            raise GroundingError("Qwen 请求超时，请稍后重试。") from error
+            raise GroundingTransientError("Qwen 请求超时，请稍后重试。") from error
 
         try:
             response_payload = json.loads(response_body)
             model_payload = json.loads(
                 _strip_code_fence(_model_response_text(response_payload))
             )
+            proposal = parse_grounding_payload(model_payload)
         except (TypeError, json.JSONDecodeError, GroundingError) as error:
-            raise GroundingError("百炼返回的数据无法解析为候选框 JSON。") from error
-        return parse_grounding_payload(model_payload)
+            raise GroundingSchemaError("百炼返回的数据无法解析为候选框 JSON。") from error
+        return proposal
 
 
 class QwenEditPlanner(QwenGrounder):
@@ -1136,7 +1172,7 @@ class QwenEditPlanner(QwenGrounder):
     def plan(self, image_rgb: np.ndarray, instruction: str) -> OneClickEditPlan:
         api_key = self._api_key_value()
         if not api_key:
-            raise GroundingError("一键处理尚未配置。")
+            raise GroundingProviderError("一键处理尚未配置。")
 
         endpoint = self._base_url_value() + "/chat/completions"
         retrieval = retrieve_editing_knowledge(instruction)
@@ -1162,22 +1198,27 @@ class QwenEditPlanner(QwenGrounder):
                 response_body = response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
             if error.code in {401, 403}:
-                raise GroundingError("百炼鉴权失败，请确认 API Key 和模型权限。") from error
+                raise GroundingProviderError("百炼鉴权失败，请确认 API Key 和模型权限。") from error
             if error.code == 429:
-                raise GroundingError("百炼当前限流，请稍后再试。") from error
-            raise GroundingError(f"百炼接口暂时不可用（HTTP {error.code}）。") from error
+                raise GroundingTransientError("百炼当前限流，请稍后再试。") from error
+            if 500 <= error.code <= 599:
+                raise GroundingTransientError(
+                    f"百炼接口暂时不可用（HTTP {error.code}）。"
+                ) from error
+            raise GroundingProviderError(f"百炼接口暂时不可用（HTTP {error.code}）。") from error
         except urllib.error.URLError as error:
-            raise GroundingError("无法连接阿里云百炼，请检查网络和服务地址。") from error
+            raise GroundingTransientError("无法连接阿里云百炼，请检查网络和服务地址。") from error
         except TimeoutError as error:
-            raise GroundingError("Qwen 理解需求超时，请稍后重试。") from error
+            raise GroundingTransientError("Qwen 理解需求超时，请稍后重试。") from error
 
         try:
             response_payload = json.loads(response_body)
             model_payload = json.loads(
                 _strip_code_fence(_model_response_text(response_payload))
             )
+            plan = _constrain_plan_to_retrieved_capabilities(
+                parse_one_click_edit_plan(model_payload), retrieval
+            )
         except (TypeError, json.JSONDecodeError, GroundingError) as error:
-            raise GroundingError("百炼返回的数据无法解析为一键编辑计划。") from error
-        return _constrain_plan_to_retrieved_capabilities(
-            parse_one_click_edit_plan(model_payload), retrieval
-        )
+            raise GroundingSchemaError("百炼返回的数据无法解析为一键编辑计划。") from error
+        return plan

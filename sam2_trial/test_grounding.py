@@ -11,6 +11,8 @@ from grounding import (
     QwenGrounder,
     QwenEditPlanner,
     GroundingError,
+    GroundingSchemaError,
+    GroundingTransientError,
     OneClickEditPlan,
     _data_url_for_image,
     _model_request,
@@ -149,6 +151,9 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("JSON", system["content"])
         self.assertIn("untrusted data", system["content"])
         self.assertIn('"point"', system["content"])
+        self.assertIn("microscopy image such as SEM or TEM", system["content"])
+        self.assertIn("scale bars", system["content"])
+        self.assertIn("boundary contrast", system["content"])
         parts = request["messages"][1]["content"]
         self.assertEqual(parts[0]["type"], "image_url")
         self.assertEqual(parts[0]["image_url"]["url"], "data:image/jpeg;base64,abc")
@@ -377,6 +382,9 @@ class GroundingTests(unittest.TestCase):
         self.assertIn('reason_code="selection_only"', system["content"])
         self.assertIn("完全没有主体或对象指代", system["content"])
         self.assertIn('reason_code="unsupported_effect_omitted"', system["content"])
+        self.assertIn("圆形体", system["content"])
+        self.assertIn("弄出来", system["content"])
+        self.assertIn("绝不表示阴影", system["content"])
         self.assertIn('"catalog_version"', system["content"])
         self.assertNotIn(instruction, system["content"])
         self.assertEqual(request["messages"][1]["content"][0]["image_url"]["url"], "data:image/jpeg;base64,abc")
@@ -747,6 +755,40 @@ class GroundingTests(unittest.TestCase):
             }
         )
         self.assertEqual(content, '{"status":"not_found","boxes":[]}')
+
+    def test_grounder_classifies_timeout_as_transient(self) -> None:
+        grounder = QwenGrounder(
+            api_key="test-key",
+            base_url=(
+                "https://ws-jezurpmuo05q16c9.cn-beijing.maas.aliyuncs.com/"
+                "compatible-mode/v1"
+            ),
+            model="qwen3-vl-flash",
+            timeout_seconds=5,
+        )
+        with patch(
+            "grounding.urllib.request.urlopen",
+            side_effect=TimeoutError("temporary timeout"),
+        ):
+            with self.assertRaises(GroundingTransientError):
+                grounder.ground(np.zeros((20, 30, 3), dtype=np.uint8), "cup")
+
+    def test_grounder_classifies_invalid_model_json_as_schema_error(self) -> None:
+        grounder = QwenGrounder(
+            api_key="test-key",
+            base_url=(
+                "https://ws-jezurpmuo05q16c9.cn-beijing.maas.aliyuncs.com/"
+                "compatible-mode/v1"
+            ),
+            model="qwen3-vl-flash",
+            timeout_seconds=5,
+        )
+        response = _FakeResponse(
+            {"choices": [{"message": {"content": "not valid json"}}]}
+        )
+        with patch("grounding.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(GroundingSchemaError):
+                grounder.ground(np.zeros((20, 30, 3), dtype=np.uint8), "cup")
 
     def test_config_without_key_is_disabled(self) -> None:
         self.assertFalse(QwenGrounder(api_key="").configured)

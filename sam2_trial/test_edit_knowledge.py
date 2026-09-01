@@ -23,7 +23,7 @@ class EditingKnowledgeTests(unittest.TestCase):
             {"background.transparent", "subject.brightness"},
         )
         payload = retrieval.as_prompt_data()
-        self.assertEqual(payload["catalog_version"], "2026-09-01.2")
+        self.assertEqual(payload["catalog_version"], "2026-09-01.3")
         self.assertEqual(
             set(payload["matched_operation_ids"]),
             {"background.transparent", "subject.brightness"},
@@ -155,6 +155,58 @@ class EditingKnowledgeTests(unittest.TestCase):
         self.assertEqual(safe_plan.status, "ready")
         self.assertEqual(safe_plan.subject["brightness"], 20)
 
+    def test_unrequested_shadow_is_removed_from_model_plan(self) -> None:
+        retrieval = retrieve_editing_knowledge("把图中圆形体弄出来，背景弄成白色")
+        self.assertNotIn("effect.shadow", retrieval.matched_operation_ids)
+        plan = OneClickEditPlan(
+            status="ready",
+            target="图像下半部中央的近圆形区域",
+            selection={"edge_offset": 0, "feather_px": 4, "cleanup": True},
+            background={"mode": "color", "color": "#ffffff", "blur_px": 0},
+            subject={"brightness": 0, "saturation": 0, "blur_px": 0},
+            effects={
+                "outline_width_px": 0,
+                "outline_color": "#ffffff",
+                "outline_opacity": 0,
+                "shadow_offset_x": 0,
+                "shadow_offset_y": 8,
+                "shadow_blur_px": 12,
+                "shadow_color": "#000000",
+                "shadow_opacity": 35,
+            },
+            summary="提取圆形区域并换成白色背景。",
+        )
+        safe_plan = _constrain_plan_to_retrieved_capabilities(plan, retrieval)
+        self.assertEqual(safe_plan.effects["shadow_offset_y"], 0)
+        self.assertEqual(safe_plan.effects["shadow_blur_px"], 0)
+        self.assertEqual(safe_plan.effects["shadow_opacity"], 0)
+
+    def test_explicit_shadow_request_keeps_model_plan(self) -> None:
+        retrieval = retrieve_editing_knowledge("把杯子弄出来，加一点柔和阴影")
+        self.assertIn("effect.shadow", retrieval.matched_operation_ids)
+        plan = OneClickEditPlan(
+            status="ready",
+            target="杯子",
+            selection={"edge_offset": 0, "feather_px": 2, "cleanup": True},
+            background={"mode": "original", "color": "#ffffff", "blur_px": 0},
+            subject={"brightness": 0, "saturation": 0, "blur_px": 0},
+            effects={
+                "outline_width_px": 0,
+                "outline_color": "#ffffff",
+                "outline_opacity": 0,
+                "shadow_offset_x": 0,
+                "shadow_offset_y": 8,
+                "shadow_blur_px": 12,
+                "shadow_color": "#000000",
+                "shadow_opacity": 35,
+            },
+            summary="提取杯子并添加柔和阴影。",
+        )
+        safe_plan = _constrain_plan_to_retrieved_capabilities(plan, retrieval)
+        self.assertEqual(safe_plan.effects["shadow_offset_y"], 8)
+        self.assertEqual(safe_plan.effects["shadow_blur_px"], 12)
+        self.assertEqual(safe_plan.effects["shadow_opacity"], 35)
+
     def test_multi_effect_request_keeps_every_matched_operation(self) -> None:
         retrieval = retrieve_editing_knowledge(
             "保留人物，背景透明，边缘自然，主体提亮、更鲜艳并柔焦"
@@ -181,6 +233,25 @@ class EditingKnowledgeTests(unittest.TestCase):
                 "background.grayscale",
             }.issubset(set(retrieval.matched_operation_ids))
         )
+
+    def test_shadow_retrieval_accepts_explicit_paraphrases_but_not_scientific_terms(self) -> None:
+        for instruction in (
+            "让商品像贴纸一样浮起来",
+            "make the product look raised with a shadow underneath",
+        ):
+            with self.subTest(instruction=instruction):
+                retrieval = retrieve_editing_knowledge(instruction)
+                self.assertIn("effect.shadow", retrieval.matched_operation_ids)
+        for instruction in ("定位悬浮细胞", "分割这个 3D 结构"):
+            with self.subTest(instruction=instruction):
+                retrieval = retrieve_editing_knowledge(instruction)
+                self.assertNotIn("effect.shadow", retrieval.matched_operation_ids)
+
+    def test_negated_shadow_never_opens_the_execution_gate(self) -> None:
+        for instruction in ("把杯子抠出来，不要阴影", "cut it out without shadow"):
+            with self.subTest(instruction=instruction):
+                retrieval = retrieve_editing_knowledge(instruction)
+                self.assertNotIn("effect.shadow", retrieval.matched_operation_ids)
 
 
 if __name__ == "__main__":
