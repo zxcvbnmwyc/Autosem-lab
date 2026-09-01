@@ -103,6 +103,99 @@ class EditApiTests(unittest.TestCase):
             self.assertEqual(output.mode, "RGBA")
         artifact.close()
 
+    def test_edit_endpoint_accepts_new_settings_and_crops_around_subject(self) -> None:
+        uploaded, result = self._result()
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "selection": {"edge_offset": 1, "feather_px": 2, "cleanup": True},
+                "background": {
+                    "mode": "color",
+                    "color": "#ffffff",
+                    "blur_px": 0,
+                    "brightness": 10,
+                    "saturation": -20,
+                    "grayscale": False,
+                },
+                "subject": {
+                    "brightness": 10,
+                    "saturation": 5,
+                    "contrast": 6,
+                    "hue_degrees": 15,
+                    "temperature": 12,
+                    "blur_px": 1,
+                    "sharpen": 9,
+                    "opacity": 70,
+                },
+                "effects": {
+                    "outline_width_px": 2,
+                    "outline_color": "#000000",
+                    "outline_opacity": 100,
+                    "shadow_offset_x": 0,
+                    "shadow_offset_y": 0,
+                    "shadow_blur_px": 0,
+                    "shadow_color": "#222222",
+                    "shadow_opacity": 0,
+                },
+                "crop": {"enabled": True, "padding_px": 0, "aspect_ratio": "1:1"},
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        edited = response.get_json()
+        self.assertEqual(edited["settings"]["background_brightness"], 10)
+        self.assertEqual(edited["settings"]["subject_contrast"], 6)
+        self.assertEqual(edited["settings"]["subject_opacity"], 70)
+        self.assertEqual(edited["settings"]["outline_width_px"], 2)
+        self.assertEqual(edited["settings"]["shadow_offset_y"], 0)
+        self.assertEqual(edited["settings"]["shadow_blur_px"], 0)
+        self.assertTrue(edited["settings"]["crop_enabled"])
+        self.assertEqual(edited["settings"]["crop_aspect_ratio"], "1:1")
+        artifact = self.client.get(edited["download_url"])
+        self.assertEqual(artifact.status_code, 200)
+        with Image.open(io.BytesIO(artifact.data)) as output:
+            self.assertEqual(output.mode, "RGB")
+            self.assertEqual(output.size[0], output.size[1])
+            self.assertLess(output.size[0], 40)
+        artifact.close()
+
+    def test_edit_rejects_subject_opacity_with_original_background(self) -> None:
+        uploaded, result = self._result()
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "background": {"mode": "original"},
+                "subject": {"opacity": 70},
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("降低主体透明度时，请先选择透明、纯色或虚化背景。", response.get_json()["error"])
+
+    def test_tight_crop_keeps_the_visible_feather_tail(self) -> None:
+        uploaded, result = self._result()
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "selection": {"edge_offset": 0, "feather_px": 6, "cleanup": True},
+                "background": {"mode": "transparent"},
+                "crop": {"enabled": True, "padding_px": 0, "aspect_ratio": "free"},
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        artifact = self.client.get(response.get_json()["download_url"])
+        self.assertEqual(artifact.status_code, 200)
+        with Image.open(io.BytesIO(artifact.data)) as output:
+            alpha = np.asarray(output.getchannel("A"))
+            border = np.concatenate((alpha[0], alpha[-1], alpha[:, 0], alpha[:, -1]))
+            self.assertLess(int(border.max()), 32)
+            self.assertGreater(int(alpha.max()), 240)
+        artifact.close()
+
     def test_edit_rejects_result_from_another_browser_session(self) -> None:
         uploaded, result = self._result()
         other_client = application.app.test_client()

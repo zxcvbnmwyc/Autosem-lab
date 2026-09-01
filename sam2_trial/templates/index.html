@@ -52,13 +52,13 @@
           </div>
           <span id="process-stage" class="process-stage">等待图片</span>
         </div>
-        <p id="process-message" class="process-message" role="status" aria-live="polite" aria-atomic="true">上传一张图片后，描述要保留的对象和想做的处理。</p>
+        <p id="process-message" class="process-message" role="status" aria-live="polite" aria-atomic="true">上传图片后，说出要处理的主体；效果可以一起说。</p>
 
         <ol id="process-steps" class="process-steps" aria-label="处理步骤">
           <li data-process-step="1"><span aria-hidden="true">1</span><b>理解需求</b></li>
           <li data-process-step="2"><span aria-hidden="true">2</span><b>定位主体</b></li>
           <li data-process-step="3"><span aria-hidden="true">3</span><b>生成选区</b></li>
-          <li data-process-step="4"><span aria-hidden="true">4</span><b>确认方案</b></li>
+          <li data-process-step="4"><span aria-hidden="true">4</span><b>检查结果</b></li>
           <li data-process-step="5"><span aria-hidden="true">5</span><b>生成预览</b></li>
         </ol>
 
@@ -82,7 +82,7 @@
             <span class="step-number">01</span>
             <div>
               <h2 id="input-title">一键处理</h2>
-              <p>上传图片，说明要保留什么。</p>
+              <p>上传图片，说出要处理的主体；效果可选。</p>
             </div>
           </div>
 
@@ -94,14 +94,14 @@
           </label>
           <p id="file-name" class="file-name" aria-live="polite">尚未选择图片</p>
 
-          <label class="field-label" for="description">想保留什么，怎么处理背景？</label>
-          <textarea id="description" maxlength="500" rows="4" placeholder="例如：保留左边的人物，背景虚化并稍微提亮"></textarea>
+          <label class="field-label" for="description">想处理哪个主体？需要的话，再说效果。</label>
+          <textarea id="description" maxlength="500" rows="4" placeholder="例如：左边的人物；或：让左边的人物更突出，背景虚化"></textarea>
           <div class="field-meta">
-            <span>一次处理一个主体。</span>
+            <span>一次处理一个主体；只说主体也可以。</span>
             <span id="description-count">0 / 500</span>
           </div>
 
-          <p class="capability-hints" aria-label="当前支持的效果">抠图 · 白底/纯色 · 背景虚化 · 局部调亮/调色 · 边缘细化</p>
+          <p class="capability-hints" aria-label="当前支持的效果">抠图 · 换背景 · 主体调色 · 描边阴影 · 按主体裁切</p>
 
           <div class="primary-actions">
             <button id="one-click-button" class="button button--primary" type="button" disabled>
@@ -203,67 +203,201 @@
           <section id="editor-section" class="editor-section" hidden aria-labelledby="editor-heading">
             <div class="result-heading-row">
               <h3 id="editor-heading">继续微调</h3>
-              <span class="editor-chip">按原图尺寸导出</span>
+              <span class="editor-chip">高清 PNG 导出</span>
             </div>
             <p id="editor-note" class="editor-note">修改后再生成预览；每次都从原图重做。</p>
 
-            <div class="editor-group">
-              <div class="editor-group__heading"><strong>修选区</strong><span>在中间画布补画或擦掉</span></div>
-              <div class="editor-tool-row" aria-label="选区画笔">
-                <button id="mask-add-button" class="mode-button" type="button" aria-pressed="false">补画选区</button>
-                <button id="mask-erase-button" class="mode-button" type="button" aria-pressed="false">擦除选区</button>
+            <section class="editor-fold" data-editor-fold="selection">
+              <button class="editor-fold__toggle" type="button" aria-expanded="true" aria-controls="editor-fold-selection">
+                <span class="editor-fold__title-wrap">
+                  <strong>选区</strong>
+                  <small>在中间画布补画或擦掉</small>
+                </span>
+                <span id="fold-summary-selection" class="editor-fold__summary">保持原样</span>
+              </button>
+              <div id="editor-fold-selection" class="editor-fold__body">
+                <div class="editor-group">
+                  <div class="editor-group__heading"><strong>修选区</strong><span>边缘、羽化和清理会一起应用</span></div>
+                  <div class="editor-tool-row" aria-label="选区画笔">
+                    <button id="mask-add-button" class="mode-button" type="button" aria-pressed="false">补画选区</button>
+                    <button id="mask-erase-button" class="mode-button" type="button" aria-pressed="false">擦除选区</button>
+                  </div>
+                  <label class="range-control" for="mask-brush-radius">
+                    <span>笔刷大小 <output id="mask-brush-radius-value">24 px</output></span>
+                    <input id="mask-brush-radius" type="range" min="3" max="100" step="1" value="24">
+                  </label>
+                  <div class="editor-tool-row">
+                    <button id="undo-mask-stroke" class="mode-button" type="button" disabled>撤销笔刷</button>
+                    <button id="clear-mask-strokes" class="text-button" type="button" disabled>清除笔刷</button>
+                  </div>
+                  <label class="range-control" for="edge-offset">
+                    <span>边缘 <output id="edge-offset-value">不偏移</output></span>
+                    <input id="edge-offset" type="range" min="-20" max="20" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="feather-px">
+                    <span>羽化 <output id="feather-px-value">0 px</output></span>
+                    <input id="feather-px" type="range" min="0" max="16" step="1" value="0">
+                  </label>
+                  <label class="check-control"><input id="mask-cleanup" type="checkbox" checked> 去除细小噪点、填补小孔</label>
+                </div>
               </div>
-              <label class="range-control" for="mask-brush-radius">
-                <span>笔刷大小 <output id="mask-brush-radius-value">24 px</output></span>
-                <input id="mask-brush-radius" type="range" min="3" max="100" step="1" value="24">
-              </label>
-              <div class="editor-tool-row">
-                <button id="undo-mask-stroke" class="mode-button" type="button" disabled>撤销笔刷</button>
-                <button id="clear-mask-strokes" class="text-button" type="button" disabled>清除笔刷</button>
+            </section>
+
+            <section class="editor-fold" data-editor-fold="background">
+              <button class="editor-fold__toggle" type="button" aria-expanded="true" aria-controls="editor-fold-background">
+                <span class="editor-fold__title-wrap">
+                  <strong>背景</strong>
+                  <small>只影响选区以外</small>
+                </span>
+                <span id="fold-summary-background" class="editor-fold__summary">保留原背景</span>
+              </button>
+              <div id="editor-fold-background" class="editor-fold__body">
+                <div class="editor-group">
+                  <div class="editor-group__heading"><strong>背景效果</strong><span>背景模式、亮度和灰度可组合</span></div>
+                  <label class="select-control" for="background-mode"><span>背景效果</span>
+                    <select id="background-mode">
+                      <option value="original">保留原背景</option>
+                      <option value="transparent">透明背景</option>
+                      <option value="color">纯色背景</option>
+                      <option value="blur">背景虚化</option>
+                    </select>
+                  </label>
+                  <label id="background-color-row" class="color-control" for="background-color" hidden><span>背景颜色</span><input id="background-color" type="color" value="#ffffff"></label>
+                  <label id="background-blur-row" class="range-control" for="background-blur-px" hidden>
+                    <span>虚化强度 <output id="background-blur-px-value">18 px</output></span>
+                    <input id="background-blur-px" type="range" min="1" max="40" step="1" value="18">
+                  </label>
+                  <label class="range-control" for="background-brightness">
+                    <span>亮度 <output id="background-brightness-value">0</output></span>
+                    <input id="background-brightness" type="range" min="-60" max="60" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="background-saturation">
+                    <span>饱和度 <output id="background-saturation-value">0</output></span>
+                    <input id="background-saturation" type="range" min="-60" max="60" step="1" value="0">
+                  </label>
+                  <label class="check-control"><input id="background-grayscale" type="checkbox"> 灰度化背景</label>
+                </div>
               </div>
-              <label class="range-control" for="edge-offset">
-                <span>边缘 <output id="edge-offset-value">不偏移</output></span>
-                <input id="edge-offset" type="range" min="-20" max="20" step="1" value="0">
-              </label>
-              <label class="range-control" for="feather-px">
-                <span>羽化 <output id="feather-px-value">0 px</output></span>
-                <input id="feather-px" type="range" min="0" max="16" step="1" value="0">
-              </label>
-              <label class="check-control"><input id="mask-cleanup" type="checkbox" checked> 去除细小噪点、填补小孔</label>
-            </div>
+            </section>
 
-            <div class="editor-group">
-              <div class="editor-group__heading"><strong>背景</strong><span>只影响选区以外</span></div>
-              <label class="select-control" for="background-mode"><span>背景效果</span>
-                <select id="background-mode">
-                  <option value="original">保留原背景</option>
-                  <option value="transparent">透明背景</option>
-                  <option value="color">纯色背景</option>
-                  <option value="blur">背景虚化</option>
-                </select>
-              </label>
-              <label id="background-color-row" class="color-control" for="background-color" hidden><span>背景颜色</span><input id="background-color" type="color" value="#ffffff"></label>
-              <label id="background-blur-row" class="range-control" for="background-blur-px" hidden>
-                <span>虚化强度 <output id="background-blur-px-value">18 px</output></span>
-                <input id="background-blur-px" type="range" min="1" max="40" step="1" value="18">
-              </label>
-            </div>
+            <section class="editor-fold" data-editor-fold="subject">
+              <button class="editor-fold__toggle" type="button" aria-expanded="false" aria-controls="editor-fold-subject">
+                <span class="editor-fold__title-wrap">
+                  <strong>主体</strong>
+                  <small>只作用于选中的主体</small>
+                </span>
+                <span id="fold-summary-subject" class="editor-fold__summary">保持原样</span>
+              </button>
+              <div id="editor-fold-subject" class="editor-fold__body" hidden>
+                <div class="editor-group">
+                  <div class="editor-group__heading"><strong>局部调整</strong><span>亮度、色相、锐化和透明度都只影响主体</span></div>
+                  <label class="range-control" for="subject-brightness">
+                    <span>亮度 <output id="subject-brightness-value">0</output></span>
+                    <input id="subject-brightness" type="range" min="-60" max="60" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-contrast">
+                    <span>对比度 <output id="subject-contrast-value">0</output></span>
+                    <input id="subject-contrast" type="range" min="-60" max="60" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-saturation">
+                    <span>饱和度 <output id="subject-saturation-value">0</output></span>
+                    <input id="subject-saturation" type="range" min="-60" max="60" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-hue-degrees">
+                    <span>色相 <output id="subject-hue-degrees-value">0°</output></span>
+                    <input id="subject-hue-degrees" type="range" min="-180" max="180" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-temperature">
+                    <span>冷暖 <output id="subject-temperature-value">0</output></span>
+                    <input id="subject-temperature" type="range" min="-60" max="60" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-sharpen">
+                    <span>锐化 <output id="subject-sharpen-value">0</output></span>
+                    <input id="subject-sharpen" type="range" min="0" max="40" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-blur-px">
+                    <span>局部模糊 <output id="subject-blur-px-value">0 px</output></span>
+                    <input id="subject-blur-px" type="range" min="0" max="32" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="subject-opacity">
+                    <span>不透明度 <output id="subject-opacity-value">100%</output></span>
+                    <input id="subject-opacity" type="range" min="0" max="100" step="1" value="100">
+                  </label>
+                </div>
+              </div>
+            </section>
 
-            <div class="editor-group">
-              <div class="editor-group__heading"><strong>局部调整</strong><span>只作用于选中的主体</span></div>
-              <label class="range-control" for="subject-brightness">
-                <span>亮度 <output id="subject-brightness-value">0</output></span>
-                <input id="subject-brightness" type="range" min="-60" max="60" step="1" value="0">
-              </label>
-              <label class="range-control" for="subject-saturation">
-                <span>饱和度 <output id="subject-saturation-value">0</output></span>
-                <input id="subject-saturation" type="range" min="-60" max="60" step="1" value="0">
-              </label>
-              <label class="range-control" for="subject-blur-px">
-                <span>局部模糊 <output id="subject-blur-px-value">0 px</output></span>
-                <input id="subject-blur-px" type="range" min="0" max="32" step="1" value="0">
-              </label>
-            </div>
+            <section class="editor-fold" data-editor-fold="effects">
+              <button class="editor-fold__toggle" type="button" aria-expanded="false" aria-controls="editor-fold-effects">
+                <span class="editor-fold__title-wrap">
+                  <strong>样式</strong>
+                  <small>描边和阴影会围绕主体生成</small>
+                </span>
+                <span id="fold-summary-effects" class="editor-fold__summary">无额外样式</span>
+              </button>
+              <div id="editor-fold-effects" class="editor-fold__body" hidden>
+                <div class="editor-group">
+                  <div class="editor-group__heading"><strong>描边</strong><span>为主体外沿添加描边</span></div>
+                  <label class="range-control" for="outline-width-px">
+                    <span>描边宽度 <output id="outline-width-px-value">0 px</output></span>
+                    <input id="outline-width-px" type="range" min="0" max="20" step="1" value="0">
+                  </label>
+                  <label class="color-control" for="outline-color"><span>描边颜色</span><input id="outline-color" type="color" value="#ffffff"></label>
+                  <label class="range-control" for="outline-opacity">
+                    <span>描边透明度 <output id="outline-opacity-value">100%</output></span>
+                    <input id="outline-opacity" type="range" min="0" max="100" step="1" value="100">
+                  </label>
+                </div>
+                <div class="editor-group">
+                  <div class="editor-group__heading"><strong>阴影</strong><span>可调偏移、模糊与颜色</span></div>
+                  <label class="range-control" for="shadow-offset-x">
+                    <span>水平偏移 <output id="shadow-offset-x-value">0 px</output></span>
+                    <input id="shadow-offset-x" type="range" min="-80" max="80" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="shadow-offset-y">
+                    <span>垂直偏移 <output id="shadow-offset-y-value">0 px</output></span>
+                    <input id="shadow-offset-y" type="range" min="-80" max="80" step="1" value="0">
+                  </label>
+                  <label class="range-control" for="shadow-blur-px">
+                    <span>阴影模糊 <output id="shadow-blur-px-value">0 px</output></span>
+                    <input id="shadow-blur-px" type="range" min="0" max="80" step="1" value="0">
+                  </label>
+                  <label class="color-control" for="shadow-color"><span>阴影颜色</span><input id="shadow-color" type="color" value="#000000"></label>
+                  <label class="range-control" for="shadow-opacity">
+                    <span>阴影透明度 <output id="shadow-opacity-value">0%</output></span>
+                    <input id="shadow-opacity" type="range" min="0" max="100" step="1" value="0">
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <section class="editor-fold" data-editor-fold="crop">
+              <button class="editor-fold__toggle" type="button" aria-expanded="false" aria-controls="editor-fold-crop">
+                <span class="editor-fold__title-wrap">
+                  <strong>画布</strong>
+                  <small>裁切到主体周围并控制留白比例</small>
+                </span>
+                <span id="fold-summary-crop" class="editor-fold__summary">不裁切</span>
+              </button>
+              <div id="editor-fold-crop" class="editor-fold__body" hidden>
+                <div class="editor-group">
+                  <div class="editor-group__heading"><strong>裁切设置</strong><span>以主体为中心生成新的画布范围</span></div>
+                  <label class="check-control"><input id="crop-enabled" type="checkbox"> 裁切到主体附近</label>
+                  <label class="range-control" for="crop-padding-px">
+                    <span>留白 <output id="crop-padding-px-value">24 px</output></span>
+                    <input id="crop-padding-px" type="range" min="0" max="200" step="1" value="24">
+                  </label>
+                  <label class="select-control" for="crop-aspect-ratio"><span>输出比例</span>
+                    <select id="crop-aspect-ratio">
+                      <option value="free">自由</option>
+                      <option value="1:1">1:1</option>
+                      <option value="4:5">4:5</option>
+                      <option value="16:9">16:9</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </section>
 
             <div class="editor-actions">
               <button id="apply-edit" class="button button--primary" type="button" disabled>生成新预览</button>

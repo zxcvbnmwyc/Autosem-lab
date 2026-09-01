@@ -45,7 +45,7 @@ from grounding import (
     load_local_dotenv,
     parse_one_click_edit_plan,
 )
-from mask_editing import apply_mask_strokes, compose_edit, refine_mask
+from mask_editing import apply_mask_strokes, compose_edit, crop_to_subject, refine_mask
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -136,6 +136,7 @@ IMAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESULT_FILE_NAMES = {"mask.png", "overlay.png", "preview.jpg", "contours.png", "result.json"}
 EDIT_FILE_NAMES = {"preview.png", "edited.png", "mask.png", "edit.json"}
 EDIT_BACKGROUND_MODES = {"original", "transparent", "color", "blur"}
+EDIT_CROP_ASPECT_RATIOS = {"free", "1:1", "4:5", "16:9"}
 MAX_EDIT_STROKES = 80
 MAX_EDIT_STROKE_POINTS = 500
 MAX_EDIT_BRUSH_RADIUS = 160
@@ -576,6 +577,7 @@ ONE_CLICK_PHASES = {
     "planning",
     "needs_target_confirmation",
     "segmenting",
+    "selection_ready",
     "ready_to_apply",
     "composing",
     "completed",
@@ -1281,6 +1283,11 @@ def _one_click_public(run: OneClickRun, record: ImageRecord) -> dict[str, Any]:
         "message": run.message,
         "created_at": run.created_at,
         "plan": plan.as_storage() if plan is not None else None,
+        "plan_notice": (
+            plan.user_message()
+            if plan is not None and plan.reason_code != "none"
+            else None
+        ),
         "grounding_id": run.grounding_id,
         "grounding_note": _one_click_grounding_note(run, record),
         "candidates": _one_click_candidates(run, record),
@@ -1336,12 +1343,19 @@ def _refresh_one_click_run(run: OneClickRun, record: ImageRecord) -> None:
         return
     quality_message = _one_click_quality_message(record, job)
     run.result_id = result_id
+    plan = _one_click_plan(run)
     if quality_message is not None:
         run.phase = "needs_input"
         run.message = quality_message
-    else:
+    elif plan is None:
+        run.phase = "failed"
+        run.message = "处理计划已失效，请重新执行。"
+    elif _one_click_has_visible_effect(plan):
         run.phase = "ready_to_apply"
-        run.message = "选区已就绪，正在处理。"
+        run.message = "选区已就绪，请确认后生成编辑预览。"
+    else:
+        run.phase = "selection_ready"
+        run.message = plan.user_message()
     _save_one_click_run(run)
 
 
@@ -1470,6 +1484,27 @@ def _object_payload(value: Any, name: str) -> dict[str, Any]:
     return value
 
 
+def _reject_payload_fields(value: dict[str, Any], allowed: set[str], name: str) -> None:
+    if set(value).difference(allowed):
+        raise ValueError(f"{name} 包含不支持的字段。")
+
+
+def _payload_bool(value: Any, name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} 必须是布尔值。")
+    return value
+
+
+def _payload_color(value: Any, name: str, default: str) -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str) or not HEX_COLOR_RE.fullmatch(value):
+        raise ValueError(f"{name} 必须是 #RRGGBB 格式。")
+    return value.lower()
+
+
 def _parse_mask_strokes(value: Any, width: int, height: int) -> list[dict[str, Any]]:
     if value is None:
         return []
@@ -1481,6 +1516,7 @@ def _parse_mask_strokes(value: Any, width: int, height: int) -> list[dict[str, A
     for index, raw_stroke in enumerate(value, start=1):
         if not isinstance(raw_stroke, dict):
             raise ValueError(f"第 {index} 条选区笔刷格式不正确。")
+        _reject_payload_fields(raw_stroke, {"mode", "radius", "points"}, f"第 {index} 条选区笔刷")
         mode = raw_stroke.get("mode")
         if mode not in {"add", "erase"}:
             raise ValueError(f"第 {index} 条选区笔刷只能是 add 或 erase。")
@@ -1500,6 +1536,11 @@ def _parse_mask_strokes(value: Any, width: int, height: int) -> list[dict[str, A
         for point_index, raw_point in enumerate(raw_points, start=1):
             if not isinstance(raw_point, dict):
                 raise ValueError(f"第 {index} 条选区笔刷的第 {point_index} 个点格式不正确。")
+            _reject_payload_fields(
+                raw_point,
+                {"x", "y"},
+                f"第 {index} 条选区笔刷的第 {point_index} 个点",
+            )
             points.append(
                 {
                     "x": _coordinate(raw_point.get("x"), f"第 {index} 条笔刷第 {point_index} 个点的 x", width),
@@ -1511,9 +1552,53 @@ def _parse_mask_strokes(value: Any, width: int, height: int) -> list[dict[str, A
 
 
 def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[str, Any]:
+    _reject_payload_fields(
+        payload,
+        {"image_id", "result_id", "selection", "background", "subject", "effects", "crop"},
+        "编辑请求",
+    )
     selection = _object_payload(payload.get("selection"), "selection")
     background = _object_payload(payload.get("background"), "background")
     subject = _object_payload(payload.get("subject"), "subject")
+    effects = _object_payload(payload.get("effects"), "effects")
+    crop = _object_payload(payload.get("crop"), "crop")
+    _reject_payload_fields(
+        selection, {"strokes", "edge_offset", "feather_px", "cleanup"}, "selection"
+    )
+    _reject_payload_fields(
+        background,
+        {"mode", "color", "blur_px", "brightness", "saturation", "grayscale"},
+        "background",
+    )
+    _reject_payload_fields(
+        subject,
+        {
+            "brightness",
+            "saturation",
+            "contrast",
+            "hue_degrees",
+            "temperature",
+            "blur_px",
+            "sharpen",
+            "opacity",
+        },
+        "subject",
+    )
+    _reject_payload_fields(
+        effects,
+        {
+            "outline_width_px",
+            "outline_color",
+            "outline_opacity",
+            "shadow_offset_x",
+            "shadow_offset_y",
+            "shadow_blur_px",
+            "shadow_color",
+            "shadow_opacity",
+        },
+        "effects",
+    )
+    _reject_payload_fields(crop, {"enabled", "padding_px", "aspect_ratio"}, "crop")
     mode = background.get("mode", "original")
     if not isinstance(mode, str) or mode not in EDIT_BACKGROUND_MODES:
         raise ValueError("背景模式只能是 original、transparent、color 或 blur。")
@@ -1532,9 +1617,53 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
         # transparent or solid-background edit cannot accidentally carry blur.
         _bounded_integer(background.get("blur_px"), "背景模糊像素", 0, MAX_EDIT_BLUR, 0)
         background_blur_px = 0
-    cleanup = selection.get("cleanup", True)
-    if not isinstance(cleanup, bool):
-        raise ValueError("cleanup 必须是布尔值。")
+    cleanup = _payload_bool(selection.get("cleanup"), "cleanup", True)
+    background_grayscale = _payload_bool(
+        background.get("grayscale"), "背景灰度", False
+    )
+    background_brightness = _bounded_integer(
+        background.get("brightness"), "背景亮度", -60, 60, 0
+    )
+    background_saturation = _bounded_integer(
+        background.get("saturation"), "背景饱和度", -60, 60, 0
+    )
+    if mode == "transparent":
+        background_brightness = 0
+        background_saturation = 0
+        background_grayscale = False
+    outline_width_px = _bounded_integer(
+        effects.get("outline_width_px"), "描边宽度", 0, 20, 0
+    )
+    outline_opacity = _bounded_integer(
+        effects.get("outline_opacity"),
+        "描边不透明度",
+        0,
+        100,
+        100 if outline_width_px else 0,
+    )
+    shadow_offset_x = _bounded_integer(
+        effects.get("shadow_offset_x"), "阴影水平偏移", -80, 80, 0
+    )
+    shadow_offset_y = _bounded_integer(
+        effects.get("shadow_offset_y"), "阴影垂直偏移", -80, 80, 0
+    )
+    shadow_blur_px = _bounded_integer(
+        effects.get("shadow_blur_px"), "阴影模糊", 0, 80, 0
+    )
+    shadow_default_opacity = 45 if shadow_offset_x or shadow_offset_y or shadow_blur_px else 0
+    shadow_opacity = _bounded_integer(
+        effects.get("shadow_opacity"), "阴影不透明度", 0, 100, shadow_default_opacity
+    )
+    if shadow_opacity > 0 and not (shadow_offset_x or shadow_offset_y or shadow_blur_px):
+        shadow_offset_y = 8
+        shadow_blur_px = 12
+    crop_enabled = _payload_bool(crop.get("enabled"), "按主体裁切", False)
+    crop_aspect_ratio = crop.get("aspect_ratio", "free")
+    if not isinstance(crop_aspect_ratio, str) or crop_aspect_ratio not in EDIT_CROP_ASPECT_RATIOS:
+        raise ValueError("裁切比例只能是 free、1:1、4:5 或 16:9。")
+    subject_opacity = _bounded_integer(subject.get("opacity"), "主体不透明度", 0, 100, 100)
+    if subject_opacity < 100 and mode == "original":
+        raise ValueError("降低主体透明度时，请先选择透明、纯色或虚化背景。")
     return {
         "strokes": _parse_mask_strokes(selection.get("strokes"), record.width, record.height),
         "edge_offset": _bounded_integer(
@@ -1545,9 +1674,28 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
         "background_mode": mode,
         "background_color": color.lower(),
         "background_blur_px": background_blur_px,
+        "background_brightness": background_brightness,
+        "background_saturation": background_saturation,
+        "background_grayscale": background_grayscale,
         "subject_brightness": _bounded_integer(subject.get("brightness"), "局部亮度", -80, 80, 0),
         "subject_saturation": _bounded_integer(subject.get("saturation"), "局部饱和度", -80, 80, 0),
+        "subject_contrast": _bounded_integer(subject.get("contrast"), "主体对比度", -60, 60, 0),
+        "subject_hue_degrees": _bounded_integer(subject.get("hue_degrees"), "主体色相", -180, 180, 0),
+        "subject_temperature": _bounded_integer(subject.get("temperature"), "主体色温", -60, 60, 0),
         "subject_blur_px": _bounded_integer(subject.get("blur_px"), "局部模糊像素", 0, MAX_EDIT_BLUR, 0),
+        "subject_sharpen": _bounded_integer(subject.get("sharpen"), "主体锐化", 0, 40, 0),
+        "subject_opacity": subject_opacity,
+        "outline_width_px": outline_width_px,
+        "outline_color": _payload_color(effects.get("outline_color"), "描边颜色", "#ffffff"),
+        "outline_opacity": outline_opacity,
+        "shadow_offset_x": shadow_offset_x,
+        "shadow_offset_y": shadow_offset_y,
+        "shadow_blur_px": shadow_blur_px,
+        "shadow_color": _payload_color(effects.get("shadow_color"), "阴影颜色", "#000000"),
+        "shadow_opacity": shadow_opacity,
+        "crop_enabled": crop_enabled,
+        "crop_padding_px": _bounded_integer(crop.get("padding_px"), "裁切留白", 0, 200, 24),
+        "crop_aspect_ratio": crop_aspect_ratio,
     }
 
 
@@ -1709,11 +1857,39 @@ def _render_local_edit(
         background_mode=settings["background_mode"],
         background_color=_rgb_color(settings["background_color"]),
         background_blur_px=settings["background_blur_px"],
+        background_brightness=settings["background_brightness"],
+        background_saturation=settings["background_saturation"],
+        background_grayscale=settings["background_grayscale"],
         subject_brightness=settings["subject_brightness"],
         subject_saturation=settings["subject_saturation"],
+        subject_contrast=settings["subject_contrast"],
+        subject_hue_degrees=settings["subject_hue_degrees"],
+        subject_temperature=settings["subject_temperature"],
         subject_blur_px=settings["subject_blur_px"],
+        subject_sharpen=settings["subject_sharpen"],
+        subject_opacity=settings["subject_opacity"],
+        outline_width_px=settings["outline_width_px"],
+        outline_color=_rgb_color(settings["outline_color"]),
+        outline_opacity=settings["outline_opacity"],
+        shadow_offset_x=settings["shadow_offset_x"],
+        shadow_offset_y=settings["shadow_offset_y"],
+        shadow_blur_px=settings["shadow_blur_px"],
+        shadow_color=_rgb_color(settings["shadow_color"]),
+        shadow_opacity=settings["shadow_opacity"],
         feather_px=settings["feather_px"],
     )
+    if settings["crop_enabled"]:
+        effect_margin = max(
+            settings["outline_width_px"],
+            abs(settings["shadow_offset_x"]) + settings["shadow_blur_px"],
+            abs(settings["shadow_offset_y"]) + settings["shadow_blur_px"],
+        ) + settings["feather_px"] * 2
+        rendered, mask = crop_to_subject(
+            rendered,
+            mask,
+            padding_px=settings["crop_padding_px"] + effect_margin,
+            aspect_ratio=settings["crop_aspect_ratio"],
+        )
     return _write_edit_artifacts(result_dir, record, settings, mask, rendered)
 
 
@@ -2595,9 +2771,81 @@ def _one_click_has_visible_effect(plan: OneClickEditPlan) -> bool:
         settings["background_mode"] != "original"
         or settings["edge_offset"]
         or settings["feather_px"]
+        or settings["background_brightness"]
+        or settings["background_saturation"]
+        or settings["background_grayscale"]
         or settings["subject_brightness"]
         or settings["subject_saturation"]
+        or settings["subject_contrast"]
+        or settings["subject_hue_degrees"]
+        or settings["subject_temperature"]
         or settings["subject_blur_px"]
+        or settings["subject_sharpen"]
+        or settings["subject_opacity"] != 100
+        or settings["outline_width_px"]
+        or settings["shadow_opacity"]
+        or settings["crop_enabled"]
+    )
+
+
+def _normalise_subject_first_plan(plan: OneClickEditPlan) -> OneClickEditPlan:
+    """Keep a clear subject executable even when editing effects are absent.
+
+    Qwen remains responsible for semantic rewriting, but the server enforces the
+    product rule that only a missing subject blocks the planning stage.  Legacy
+    non-ready model replies with a usable target become honest selection-only
+    plans; their rejected effect settings were already discarded by the parser.
+    """
+
+    if plan.status == "ready" and plan.target:
+        visible_effect = _one_click_has_visible_effect(plan)
+        reason_code = plan.reason_code
+        if visible_effect and reason_code == "selection_only":
+            reason_code = "none"
+        elif not visible_effect and reason_code != "unsupported_effect_omitted":
+            reason_code = "selection_only"
+        if reason_code == plan.reason_code:
+            return plan
+        return OneClickEditPlan(
+            status="ready",
+            target=plan.target,
+            selection=dict(plan.selection),
+            background=dict(plan.background),
+            subject=dict(plan.subject),
+            effects=dict(plan.effects),
+            crop=dict(plan.crop),
+            summary=plan.summary,
+            reason_code=reason_code,
+        )
+
+    if plan.target:
+        reason_code = (
+            "unsupported_effect_omitted"
+            if plan.status == "unsupported"
+            else "selection_only"
+        )
+        return OneClickEditPlan(
+            status="ready",
+            target=plan.target,
+            selection=dict(plan.selection),
+            background=dict(plan.background),
+            subject=dict(plan.subject),
+            effects=dict(plan.effects),
+            crop=dict(plan.crop),
+            summary=plan.summary,
+            reason_code=reason_code,
+        )
+
+    return OneClickEditPlan(
+        status="needs_input",
+        target=None,
+        selection=dict(plan.selection),
+        background=dict(plan.background),
+        subject=dict(plan.subject),
+        effects=dict(plan.effects),
+        crop=dict(plan.crop),
+        summary="没有从用户文字中识别到要处理的主体。",
+        reason_code="missing_subject",
     )
 
 
@@ -2610,7 +2858,7 @@ def _select_one_click_candidate(proposal: GroundingProposal) -> int | None:
 
 def _one_click_choice_message(proposal: GroundingProposal, target: str) -> str:
     if len(proposal.candidates) > 1 or proposal.status == "ambiguous":
-        return f"找到 {len(proposal.candidates)} 个「{target}」候选，请确认要保留哪一个。"
+        return f"找到 {len(proposal.candidates)} 个「{target}」候选，请确认要处理哪一个。"
     candidate = proposal.candidates[0]
     label = candidate.label or target
     return f"已找到「{label}」，但定位不够确定。请确认后再生成选区。"
@@ -2661,7 +2909,7 @@ def create_one_click_run() -> Any:
         record = _require_record(payload.get("image_id"))
         instruction = _parse_description(payload.get("instruction"))
         if instruction is None:
-            raise ValueError("请说明主体和效果。")
+            raise ValueError("请说明要处理的主体。")
     except ValueError as error:
         return _json_error(str(error), 400)
 
@@ -2683,7 +2931,9 @@ def create_one_click_run() -> Any:
         return jsonify(_one_click_public(run, record)), 201
 
     try:
-        plan = edit_planner.plan(_load_rgb(record), instruction)
+        plan = _normalise_subject_first_plan(
+            edit_planner.plan(_load_rgb(record), instruction)
+        )
     except GroundingError as error:
         app.logger.warning("One-click edit planning failed: %s", error)
         run.phase = "failed"
@@ -2700,21 +2950,15 @@ def create_one_click_run() -> Any:
         return jsonify(_one_click_public(run, record)), 201
 
     run.plan = plan.as_storage()
-    if plan.status == "unsupported":
-        run.phase = "unsupported"
-        run.message = plan.user_message()
-        _save_one_click_run(run)
-        _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
-        return jsonify(_one_click_public(run, record)), 201
     if plan.status != "ready":
         run.phase = "needs_input"
         run.message = plan.user_message()
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201
-    if not plan.target or not _one_click_has_visible_effect(plan):
+    if not plan.target:
         run.phase = "needs_input"
-        run.message = "没有识别到可执行的效果，请明确说明主体和想做的处理。"
+        run.message = "请说明要处理的主体。"
         _save_one_click_run(run)
         _record_metric("one_click_edit", owner_id=owner_id, status=run.phase, duration_ms=(time.perf_counter() - started_at) * 1000)
         return jsonify(_one_click_public(run, record)), 201

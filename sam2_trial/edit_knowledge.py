@@ -22,7 +22,7 @@ CARD_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
 MAX_CARD_RULE_CHARS = 480
 MAX_ALIAS_CHARS = 80
 MAX_ALIASES_PER_CARD = 64
-MAX_RETRIEVAL_LIMIT = 9
+MAX_RETRIEVAL_LIMIT = 12
 
 # These are intentionally hard-coded.  A catalog can describe an existing
 # capability or narrow its wording, but it cannot grant a new executable tool.
@@ -41,9 +41,20 @@ OPERATION_CARD_IDS = frozenset(
         "background.transparent",
         "background.color",
         "background.blur",
+        "background.brightness",
+        "background.saturation",
+        "background.grayscale",
         "subject.brightness",
         "subject.saturation",
+        "subject.contrast",
+        "subject.hue",
+        "subject.temperature",
         "subject.blur",
+        "subject.sharpen",
+        "subject.opacity",
+        "effect.outline",
+        "effect.shadow",
+        "crop.subject",
     }
 )
 ALLOWED_CARD_IDS = CORE_CARD_IDS | OPERATION_CARD_IDS
@@ -58,9 +69,20 @@ EXPECTED_SCOPE_BY_ID = {
     "background.transparent": "automatic",
     "background.color": "automatic",
     "background.blur": "automatic",
+    "background.brightness": "automatic",
+    "background.saturation": "automatic",
+    "background.grayscale": "automatic",
     "subject.brightness": "automatic",
     "subject.saturation": "automatic",
+    "subject.contrast": "automatic",
+    "subject.hue": "automatic",
+    "subject.temperature": "automatic",
     "subject.blur": "automatic",
+    "subject.sharpen": "automatic",
+    "subject.opacity": "automatic",
+    "effect.outline": "automatic",
+    "effect.shadow": "automatic",
+    "crop.subject": "automatic",
 }
 AUTOMATIC_OPERATION_CARD_IDS = frozenset(
     card_id

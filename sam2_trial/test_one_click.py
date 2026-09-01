@@ -86,8 +86,35 @@ def _plan(status: str = "ready", target: str | None = "the cup") -> OneClickEdit
         status=status,
         target=target,
         selection={"edge_offset": 0, "feather_px": 2, "cleanup": True},
-        background={"mode": "transparent", "color": "#ffffff", "blur_px": 0},
-        subject={"brightness": 8, "saturation": 0, "blur_px": 0},
+        background={
+            "mode": "transparent",
+            "color": "#ffffff",
+            "blur_px": 0,
+            "brightness": 0,
+            "saturation": 0,
+            "grayscale": False,
+        },
+        subject={
+            "brightness": 8,
+            "saturation": 0,
+            "contrast": 0,
+            "hue_degrees": 0,
+            "temperature": 0,
+            "blur_px": 0,
+            "sharpen": 0,
+            "opacity": 100,
+        },
+        effects={
+            "outline_width_px": 0,
+            "outline_color": "#ffffff",
+            "outline_opacity": 0,
+            "shadow_offset_x": 0,
+            "shadow_offset_y": 0,
+            "shadow_blur_px": 0,
+            "shadow_color": "#000000",
+            "shadow_opacity": 0,
+        },
+        crop={"enabled": False, "padding_px": 24, "aspect_ratio": "free"},
         summary=summary,
         reason_code=reason_code,
     )
@@ -201,10 +228,10 @@ class OneClickEditApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201)
         run = response.get_json()
-        self.assertEqual(run["phase"], "unsupported")
+        self.assertEqual(run["phase"], "needs_input")
         self.assertEqual(
             run["message"],
-            "当前只支持单一主体选区、背景处理和主体局部调整。",
+            "请说明要处理的具体主体。",
         )
         self.assertIsNone(run["job"])
         self.assertEqual(self.engine.calls, [])
@@ -229,7 +256,7 @@ class OneClickEditApiTests(unittest.TestCase):
         self.assertEqual(run["phase"], "needs_input")
         self.assertEqual(
             run["message"],
-            "画面中有多个可能的主体，请说明位置或特征。",
+            "请说明要处理的具体主体。",
         )
         self.assertNotIn("https://", run["message"])
         self.assertIsNone(run["job"])
@@ -298,6 +325,174 @@ class OneClickEditApiTests(unittest.TestCase):
         self.assertEqual(other_client.get(f"/api/one-click-runs/{started.get_json()['run_id']}").status_code, 404)
         self._wait_until_ready(started.get_json()["run_id"])
         self.assertEqual(other_client.post(f"/api/one-click-runs/{started.get_json()['run_id']}/apply", json={}).status_code, 404)
+
+    def test_one_click_apply_preserves_new_effect_and_crop_settings(self) -> None:
+        self.planner.plan_value = OneClickEditPlan(
+            status="ready",
+            target="the cup",
+            selection={"edge_offset": -5, "feather_px": 2, "cleanup": True},
+            background={
+                "mode": "color",
+                "color": "#ffffff",
+                "blur_px": 0,
+                "brightness": 8,
+                "saturation": -10,
+                "grayscale": False,
+            },
+            subject={
+                "brightness": 10,
+                "saturation": 4,
+                "contrast": 6,
+                "hue_degrees": 12,
+                "temperature": 10,
+                "blur_px": 1,
+                "sharpen": 7,
+                "opacity": 72,
+            },
+            effects={
+                "outline_width_px": 2,
+                "outline_color": "#000000",
+                "outline_opacity": 100,
+                "shadow_offset_x": 2,
+                "shadow_offset_y": 3,
+                "shadow_blur_px": 4,
+                "shadow_color": "#222222",
+                "shadow_opacity": 50,
+            },
+            crop={"enabled": True, "padding_px": 5, "aspect_ratio": "1:1"},
+            summary="保留杯子，裁成正方形并加描边阴影。",
+        )
+        uploaded = self._upload()
+        started = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "保留这个杯子，裁成正方形并加描边阴影"},
+        )
+        self.assertEqual(started.status_code, 202)
+        ready = self._wait_until_ready(started.get_json()["run_id"])
+        self.assertEqual(ready["phase"], "ready_to_apply")
+
+        completed = self.client.post(
+            f"/api/one-click-runs/{started.get_json()['run_id']}/apply", json={}
+        )
+        self.assertEqual(completed.status_code, 201)
+        public = completed.get_json()
+        self.assertEqual(public["edit"]["settings"]["subject_opacity"], 72)
+        self.assertEqual(public["edit"]["settings"]["outline_width_px"], 2)
+        self.assertEqual(public["edit"]["settings"]["shadow_blur_px"], 4)
+        self.assertTrue(public["edit"]["settings"]["crop_enabled"])
+        self.assertEqual(public["edit"]["settings"]["crop_aspect_ratio"], "1:1")
+        artifact = self.client.get(public["edit"]["download_url"])
+        self.assertEqual(artifact.status_code, 200)
+        with Image.open(io.BytesIO(artifact.data)) as output:
+            self.assertEqual(output.mode, "RGB")
+            self.assertEqual(output.size, (24, 24))
+        artifact.close()
+
+    def test_selection_only_plan_reaches_sam_and_stops_at_selection_ready(self) -> None:
+        self.planner.plan_value = OneClickEditPlan(
+            status="ready",
+            target="the cup",
+            selection={"edge_offset": 0, "feather_px": 0, "cleanup": True},
+            background={
+                "mode": "original",
+                "color": "#ffffff",
+                "blur_px": 0,
+                "brightness": 0,
+                "saturation": 0,
+                "grayscale": False,
+            },
+            subject={
+                "brightness": 0,
+                "saturation": 0,
+                "contrast": 0,
+                "hue_degrees": 0,
+                "temperature": 0,
+                "blur_px": 0,
+                "sharpen": 0,
+                "opacity": 100,
+            },
+            effects={
+                "outline_width_px": 0,
+                "outline_color": "#ffffff",
+                "outline_opacity": 0,
+                "shadow_offset_x": 0,
+                "shadow_offset_y": 0,
+                "shadow_blur_px": 0,
+                "shadow_color": "#000000",
+                "shadow_opacity": 0,
+            },
+            crop={"enabled": False, "padding_px": 24, "aspect_ratio": "free"},
+            summary="只先确定主体选区。",
+            reason_code="selection_only",
+        )
+        uploaded = self._upload()
+        started = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "保留这个杯子"},
+        )
+        self.assertEqual(started.status_code, 202)
+        run = started.get_json()
+        self.assertEqual(run["phase"], "segmenting")
+        self.assertEqual(self.grounder.calls, ["the cup"])
+
+        selected = self._wait_until_ready(run["run_id"])
+        self.assertEqual(selected["phase"], "selection_ready")
+        self.assertEqual(selected["selected_candidate"]["label"], "cup")
+        self.assertEqual(len(self.engine.calls), 1)
+
+        blocked = self.client.post(f"/api/one-click-runs/{run['run_id']}/apply", json={})
+        self.assertEqual(blocked.status_code, 409)
+
+    def test_legacy_unsupported_plan_with_target_is_normalized_and_reaches_sam(self) -> None:
+        self.planner.plan_value = OneClickEditPlan(
+            status="unsupported",
+            target="the cup",
+            selection={"edge_offset": 0, "feather_px": 0, "cleanup": True},
+            background={
+                "mode": "original",
+                "color": "#ffffff",
+                "blur_px": 0,
+                "brightness": 0,
+                "saturation": 0,
+                "grayscale": False,
+            },
+            subject={
+                "brightness": 0,
+                "saturation": 0,
+                "contrast": 0,
+                "hue_degrees": 0,
+                "temperature": 0,
+                "blur_px": 0,
+                "sharpen": 0,
+                "opacity": 100,
+            },
+            effects={
+                "outline_width_px": 0,
+                "outline_color": "#ffffff",
+                "outline_opacity": 0,
+                "shadow_offset_x": 0,
+                "shadow_offset_y": 0,
+                "shadow_blur_px": 0,
+                "shadow_color": "#000000",
+                "shadow_opacity": 0,
+            },
+            crop={"enabled": False, "padding_px": 24, "aspect_ratio": "free"},
+            summary="删掉路人并补全不支持，但主体可先选出来。",
+            reason_code="unsupported_operation",
+        )
+        uploaded = self._upload()
+        started = self.client.post(
+            "/api/one-click-runs",
+            json={"image_id": uploaded["image_id"], "instruction": "删掉旁边的人，只保留这个杯子"},
+        )
+        self.assertEqual(started.status_code, 202)
+        self.assertEqual(started.get_json()["phase"], "segmenting")
+        selected = self._wait_until_ready(started.get_json()["run_id"])
+        self.assertEqual(selected["phase"], "selection_ready")
+        self.assertEqual(
+            selected["message"],
+            "已识别主体；无法执行的生成式部分已跳过，只运行安全的本地操作。",
+        )
 
 
 if __name__ == "__main__":

@@ -1,25 +1,25 @@
 {
   "schema_version": 1,
-  "catalog_version": "2026-08-31.3",
-  "retrieval_limit": 6,
+  "catalog_version": "2026-09-01.2",
+  "retrieval_limit": 10,
   "always_include": [
     {
       "id": "subject.single_visible",
       "aliases": [],
       "scope": "automatic",
-      "rule": "一次自动执行只能处理一个画面中可见、可定位的主体。主体不明确、主体不存在或有多个同样合理的主体时，返回 needs_input；不要猜测。"
+      "rule": "一次自动执行只处理一个主体。用户不需要说“保留”或字段名；从句子中提取承受动作或被明确指代的对象。只输入主体也可返回 ready 并使用全默认值生成选区。只有文字中完全没有主体或对象指代时才返回 needs_input/missing_subject；同类候选交给后续定位确认。"
     },
     {
       "id": "policy.non_generative",
       "aliases": [],
       "scope": "policy",
-      "rule": "这是本地非生成式编辑器：不能删除物体后补全背景、添加或替换物体、移动/缩放/旋转主体、主体改色、修复/锐化/超分、生成或更换场景、扩图、裁剪、加文字、拼图、美颜或应用全图风格，也不能同时自动处理多个主体。此类需求必须返回 unsupported，不能偷偷改成别的效果。"
+      "rule": "这是本地非生成式编辑器：不能删除后补背景、增添或替换物体、移动/缩放/旋转主体、精确替换局部材质、修复或超分、生成场景、扩图、任意坐标裁剪、加文字、拼图、美颜或应用全图风格。不得声称已执行，也不能偷偷换成不等价效果；若句子已有明确主体，跳过不支持部分，保留独立的受支持操作并标记 unsupported_effect_omitted，至少继续生成主体选区。"
     },
     {
       "id": "response.contract",
       "aliases": [],
       "scope": "policy",
-      "rule": "只能返回规定的 JSON 字段和数值范围。未被用户明确要求的效果保持默认值；非 ready 状态使用安全默认设置。"
+      "rule": "只能返回规定的 JSON 字段和数值范围。主体明确时使用 ready；没有效果则用全默认值和 selection_only。自然语言效果按视觉目的保守映射到能力卡，不要求用户说字段名。跳过不支持部分时使用 unsupported_effect_omitted；非 ready 状态使用安全默认设置。"
     }
   ],
   "operations": [
@@ -103,6 +103,24 @@
       "rule": "虚化背景时使用 background.mode=blur，background.blur_px 只能是 1 到 40 的整数；不虚化时不能保留背景模糊值。"
     },
     {
+      "id": "background.brightness",
+      "aliases": ["背景提亮", "背景变亮", "背景亮一点", "背景压暗", "背景变暗", "背景暗一点", "降低背景亮度", "增加背景亮度"],
+      "scope": "automatic",
+      "rule": "可只调整选区外背景的 brightness（-60 到 60）。透明背景不使用该值；未明确要求时保持 0。"
+    },
+    {
+      "id": "background.saturation",
+      "aliases": ["背景饱和度", "背景更鲜艳", "背景颜色更浓", "背景颜色淡一点", "背景降饱和", "背景去饱和"],
+      "scope": "automatic",
+      "rule": "可只调整选区外背景的 saturation（-60 到 60）。透明背景不使用该值；未明确要求时保持 0。"
+    },
+    {
+      "id": "background.grayscale",
+      "aliases": ["背景黑白", "黑白背景", "背景灰度", "背景变灰", "背景去色", "让背景没有颜色"],
+      "scope": "automatic",
+      "rule": "可将选区外背景转为灰度，使用 background.grayscale=true。它不影响主体，也不能当作全图黑白滤镜。"
+    },
+    {
       "id": "subject.brightness",
       "aliases": ["提亮", "变亮", "亮一点", "暗一点", "降低亮度", "增加亮度", "突出主体", "突出这个商品", "让商品更显眼", "让这个商品更显眼", "凸显主体", "聚焦商品", "更亮", "亮一些", "亮些", "调亮", "弄亮", "加亮", "提高亮度", "光线亮一点", "更醒目", "更突出", "主体突出一点"],
       "scope": "automatic",
@@ -115,10 +133,58 @@
       "rule": "可仅对主体设置 saturation（-60 到 60）。未明确要求颜色强度时保持 0，不能进行全图调色。"
     },
     {
+      "id": "subject.contrast",
+      "aliases": ["主体对比度", "提高对比度", "降低对比度", "对比强一点", "对比柔一点", "层次更明显"],
+      "scope": "automatic",
+      "rule": "可仅对主体设置 contrast（-60 到 60）。它是局部确定性调节，不会恢复丢失细节。"
+    },
+    {
+      "id": "subject.hue",
+      "aliases": ["主体色相", "调整色相", "换个色调", "整体换色调", "色调偏移", "主体颜色偏一点"],
+      "scope": "automatic",
+      "rule": "可对整个主体设置 hue_degrees（-180 到 180）做整体色相偏移。不能精确替换主体的某个局部颜色、纹理或材质。"
+    },
+    {
+      "id": "subject.temperature",
+      "aliases": ["主体暖一点", "主体冷一点", "偏暖", "偏冷", "暖色调", "冷色调", "调整色温", "色温高一点", "色温低一点"],
+      "scope": "automatic",
+      "rule": "可仅对主体设置 temperature（-60 到 60）；正值偏暖、负值偏冷。未明确要求时保持 0。"
+    },
+    {
       "id": "subject.blur",
       "aliases": ["柔焦", "主体模糊", "虚化主体", "柔化主体", "虚焦主体"],
       "scope": "automatic",
       "rule": "可仅对主体设置 blur_px（0 到 32）。它不能用于美颜、修皮肤或制造新细节。"
+    },
+    {
+      "id": "subject.sharpen",
+      "aliases": ["主体锐化", "主体清晰一点", "让主体更清楚", "边缘更清晰", "提升主体清晰度", "商品更清晰"],
+      "scope": "automatic",
+      "rule": "可仅对主体设置 sharpen（0 到 40）进行有限的反锐化增强。它不会生成新细节，也不能替代修复或超分。"
+    },
+    {
+      "id": "subject.opacity",
+      "aliases": ["主体半透明", "主体透明一点", "降低主体不透明度", "淡化主体", "主体若隐若现"],
+      "scope": "automatic",
+      "rule": "可设置 subject.opacity（0 到 100）。低于 100 时必须同时使用透明、纯色或虚化背景；保留原背景时返回 needs_input 和 opacity_requires_background。"
+    },
+    {
+      "id": "effect.outline",
+      "aliases": ["描边", "加描边", "白色描边", "黑色描边", "轮廓线", "贴纸白边", "外轮廓", "加一圈边"],
+      "scope": "automatic",
+      "rule": "可在主体外侧添加 outline_width_px（0 到 20）、outline_color 和 outline_opacity（0 到 100）。宽度为 0 时关闭描边。"
+    },
+    {
+      "id": "effect.shadow",
+      "aliases": ["阴影", "投影", "加阴影", "柔和阴影", "主体投影", "悬浮感", "立体一点"],
+      "scope": "automatic",
+      "rule": "可添加确定性投影：shadow_offset_x/y（-80 到 80）、shadow_blur_px（0 到 80）、shadow_color 和 shadow_opacity（0 到 100）。未要求时全部关闭。"
+    },
+    {
+      "id": "crop.subject",
+      "aliases": ["裁到主体", "围绕主体裁剪", "按主体裁剪", "主体居中裁切", "裁成正方形", "一比一裁剪", "4:5裁剪", "16:9裁剪", "商品特写", "只留主体附近"],
+      "scope": "automatic",
+      "rule": "可按主体选区自动裁切，使用 crop.enabled、padding_px（0 到 200）及 aspect_ratio（free、1:1、4:5、16:9）。不能按任意坐标重构画面或扩展画布。"
     }
   ]
 }

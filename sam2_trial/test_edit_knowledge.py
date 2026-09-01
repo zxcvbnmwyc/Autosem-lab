@@ -23,7 +23,7 @@ class EditingKnowledgeTests(unittest.TestCase):
             {"background.transparent", "subject.brightness"},
         )
         payload = retrieval.as_prompt_data()
-        self.assertEqual(payload["catalog_version"], "2026-08-31.3")
+        self.assertEqual(payload["catalog_version"], "2026-09-01.2")
         self.assertEqual(
             set(payload["matched_operation_ids"]),
             {"background.transparent", "subject.brightness"},
@@ -45,7 +45,7 @@ class EditingKnowledgeTests(unittest.TestCase):
             "边缘自然，手动调整，保留原背景，透明背景，纯色背景，背景虚化，"
             "主体提亮、更鲜艳并柔焦"
         )
-        self.assertEqual(len(retrieval.matched_operation_ids), 6)
+        self.assertEqual(len(retrieval.matched_operation_ids), 9)
         self.assertEqual(retrieval.available_ids, ALLOWED_CARD_IDS)
 
     def test_every_allowed_card_has_a_fixed_scope(self) -> None:
@@ -96,13 +96,13 @@ class EditingKnowledgeTests(unittest.TestCase):
         source = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
         transparent = next(card for card in source["operations"] if card["id"] == "background.transparent")
         transparent["aliases"].append("透明化")
-        source["catalog_version"] = "2026-08-31-rag-test"
+        source["catalog_version"] = "2026-09-01-rag-test"
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "catalog.json"
             path.write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
             retrieval = retrieve_editing_knowledge("把背景透明化", load_editing_knowledge(path))
         self.assertIn("background.transparent", retrieval.matched_operation_ids)
-        self.assertEqual(retrieval.catalog_version, "2026-08-31-rag-test")
+        self.assertEqual(retrieval.catalog_version, "2026-09-01-rag-test")
 
     def test_catalog_cannot_introduce_an_unknown_executable_capability(self) -> None:
         source = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
@@ -166,6 +166,19 @@ class EditingKnowledgeTests(unittest.TestCase):
                 "subject.brightness",
                 "subject.saturation",
                 "subject.blur",
+            }.issubset(set(retrieval.matched_operation_ids))
+        )
+
+    def test_natural_language_retrieval_finds_outline_shadow_crop_and_grayscale_cards(self) -> None:
+        retrieval = retrieve_editing_knowledge(
+            "给商品加一圈边，有点悬浮感，4:5裁剪，再让背景没有颜色"
+        )
+        self.assertTrue(
+            {
+                "effect.outline",
+                "effect.shadow",
+                "crop.subject",
+                "background.grayscale",
             }.issubset(set(retrieval.matched_operation_ids))
         )
 

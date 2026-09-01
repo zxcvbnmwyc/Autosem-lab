@@ -60,12 +60,45 @@
   const backgroundBlurRow = document.getElementById("background-blur-row");
   const backgroundBlurPx = document.getElementById("background-blur-px");
   const backgroundBlurPxValue = document.getElementById("background-blur-px-value");
+  const backgroundBrightness = document.getElementById("background-brightness");
+  const backgroundBrightnessValue = document.getElementById("background-brightness-value");
+  const backgroundSaturation = document.getElementById("background-saturation");
+  const backgroundSaturationValue = document.getElementById("background-saturation-value");
+  const backgroundGrayscale = document.getElementById("background-grayscale");
   const subjectBrightness = document.getElementById("subject-brightness");
   const subjectBrightnessValue = document.getElementById("subject-brightness-value");
+  const subjectContrast = document.getElementById("subject-contrast");
+  const subjectContrastValue = document.getElementById("subject-contrast-value");
   const subjectSaturation = document.getElementById("subject-saturation");
   const subjectSaturationValue = document.getElementById("subject-saturation-value");
+  const subjectHueDegrees = document.getElementById("subject-hue-degrees");
+  const subjectHueDegreesValue = document.getElementById("subject-hue-degrees-value");
+  const subjectTemperature = document.getElementById("subject-temperature");
+  const subjectTemperatureValue = document.getElementById("subject-temperature-value");
+  const subjectSharpen = document.getElementById("subject-sharpen");
+  const subjectSharpenValue = document.getElementById("subject-sharpen-value");
   const subjectBlurPx = document.getElementById("subject-blur-px");
   const subjectBlurPxValue = document.getElementById("subject-blur-px-value");
+  const subjectOpacity = document.getElementById("subject-opacity");
+  const subjectOpacityValue = document.getElementById("subject-opacity-value");
+  const outlineWidthPx = document.getElementById("outline-width-px");
+  const outlineWidthPxValue = document.getElementById("outline-width-px-value");
+  const outlineColor = document.getElementById("outline-color");
+  const outlineOpacity = document.getElementById("outline-opacity");
+  const outlineOpacityValue = document.getElementById("outline-opacity-value");
+  const shadowOffsetX = document.getElementById("shadow-offset-x");
+  const shadowOffsetXValue = document.getElementById("shadow-offset-x-value");
+  const shadowOffsetY = document.getElementById("shadow-offset-y");
+  const shadowOffsetYValue = document.getElementById("shadow-offset-y-value");
+  const shadowBlurPx = document.getElementById("shadow-blur-px");
+  const shadowBlurPxValue = document.getElementById("shadow-blur-px-value");
+  const shadowColor = document.getElementById("shadow-color");
+  const shadowOpacity = document.getElementById("shadow-opacity");
+  const shadowOpacityValue = document.getElementById("shadow-opacity-value");
+  const cropEnabled = document.getElementById("crop-enabled");
+  const cropPaddingPx = document.getElementById("crop-padding-px");
+  const cropPaddingPxValue = document.getElementById("crop-padding-px-value");
+  const cropAspectRatio = document.getElementById("crop-aspect-ratio");
   const applyEditButton = document.getElementById("apply-edit");
   const resetEditButton = document.getElementById("reset-edit");
   const editResult = document.getElementById("edit-result");
@@ -73,10 +106,33 @@
   const editSummary = document.getElementById("edit-summary");
   const editedDownloadLink = document.getElementById("edited-download-link");
   const editedMaskLink = document.getElementById("edited-mask-link");
-  const editorInputs = [
-    maskBrushRadius, edgeOffset, featherPx, maskCleanup, backgroundMode, backgroundColor,
-    backgroundBlurPx, subjectBrightness, subjectSaturation, subjectBlurPx,
+  const editorFoldToggles = Array.from(document.querySelectorAll(".editor-fold__toggle"));
+  const foldSummarySelection = document.getElementById("fold-summary-selection");
+  const foldSummaryBackground = document.getElementById("fold-summary-background");
+  const foldSummarySubject = document.getElementById("fold-summary-subject");
+  const foldSummaryEffects = document.getElementById("fold-summary-effects");
+  const foldSummaryCrop = document.getElementById("fold-summary-crop");
+  const selectionInputs = [maskBrushRadius, edgeOffset, featherPx, maskCleanup].filter(Boolean);
+  const backgroundInputs = [
+    backgroundMode, backgroundColor, backgroundBlurPx, backgroundBrightness, backgroundSaturation, backgroundGrayscale,
   ].filter(Boolean);
+  const subjectInputs = [
+    subjectBrightness, subjectContrast, subjectSaturation, subjectHueDegrees,
+    subjectTemperature, subjectSharpen, subjectBlurPx, subjectOpacity,
+  ].filter(Boolean);
+  const effectsInputs = [
+    outlineWidthPx, outlineColor, outlineOpacity,
+    shadowOffsetX, shadowOffsetY, shadowBlurPx, shadowColor, shadowOpacity,
+  ].filter(Boolean);
+  const cropInputs = [cropEnabled, cropPaddingPx, cropAspectRatio].filter(Boolean);
+  const editorInputGroups = {
+    selection: selectionInputs,
+    background: backgroundInputs,
+    subject: subjectInputs,
+    effects: effectsInputs,
+    crop: cropInputs,
+  };
+  const editorInputs = Object.values(editorInputGroups).flat();
 
   if (!fileInput || !description || !canvas || !context || !processHub || !processEyebrow || !processTitle || !processStage || !processMessage || !processPlan || !processPlanItems || !processPlanSource || !processPlanNote || !processActions || !processAssurance || !candidateChoices) {
     return;
@@ -119,6 +175,7 @@
     oneClickPhase: null,
     oneClickMessage: "",
     oneClickPlan: null,
+    oneClickPlanNotice: "",
     oneClickCandidates: [],
     oneClickSelectedCandidateIndex: null,
     oneClickPollTimer: null,
@@ -133,7 +190,7 @@
     pollFailures: 0,
     jobStartedAt: null,
     processJob: null,
-    noticeMessage: "上传一张图片后，描述要保留的对象和想做的处理。",
+    noticeMessage: "上传图片后，说出要处理的主体；效果可以一起说。",
     noticeKind: "idle",
     localPreviewUrl: null,
     previewToken: 0,
@@ -237,6 +294,8 @@
     editorInputs.forEach((input) => {
       input.disabled = disabled;
     });
+    if (cropPaddingPx) cropPaddingPx.disabled = disabled || !(cropEnabled && cropEnabled.checked);
+    if (cropAspectRatio) cropAspectRatio.disabled = disabled || !(cropEnabled && cropEnabled.checked);
     [maskAddButton, maskEraseButton, undoMaskStrokeButton, clearMaskStrokesButton].forEach((button) => {
       if (button) {
         button.disabled = disabled || !state.maskSource || (button === undoMaskStrokeButton && !state.maskStrokes.length) || (button === clearMaskStrokesButton && !state.maskStrokes.length);
@@ -516,6 +575,9 @@
     }
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(state.image, 0, 0, canvas.width, canvas.height);
+    if (state.showingEdit) {
+      return;
+    }
     drawMaskOverlay();
     drawAgentCandidateBoxes();
     drawBox(state.box, false);
@@ -732,6 +794,7 @@
     state.oneClickPhase = null;
     state.oneClickMessage = "";
     state.oneClickPlan = null;
+    state.oneClickPlanNotice = "";
     state.oneClickCandidates = [];
     state.oneClickSelectedCandidateIndex = null;
     state.oneClickPollFailures = 0;
@@ -742,8 +805,9 @@
   function oneClickPhaseMeta(phase) {
     return {
       planning: { title: "正在理解你的需求", stage: "第 1 步", step: 1, tone: "working" },
-      needs_target_confirmation: { title: "请确认要保留的对象", stage: "待确认", step: 2, tone: "attention" },
+      needs_target_confirmation: { title: "请确认要处理的对象", stage: "待确认", step: 2, tone: "attention" },
       segmenting: { title: "正在生成选区", stage: "第 3 步", step: 3, tone: "working" },
+      selection_ready: { title: "选区已准备好", stage: "可检查", step: 4, tone: "success" },
       ready_to_apply: { title: "请确认这次处理", stage: "方案待确认", step: 4, tone: "attention" },
       composing: { title: "正在生成编辑预览", stage: "第 5 步", step: 5, tone: "working" },
       completed: { title: "预览已生成", stage: "完成", step: 5, tone: "success" },
@@ -756,6 +820,83 @@
   function planInteger(value, fallback) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? Math.round(parsed) : fallback;
+  }
+
+  function validHexColor(value, fallback) {
+    return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)
+      ? value.toUpperCase()
+      : fallback;
+  }
+
+  function readPlanSection(plan, key) {
+    return plan && plan[key] && typeof plan[key] === "object" ? plan[key] : {};
+  }
+
+  function isSmallViewport() {
+    return window.matchMedia("(max-width: 560px)").matches;
+  }
+
+  function foldElements(name) {
+    const root = document.querySelector('[data-editor-fold="' + name + '"]');
+    if (!root) {
+      return null;
+    }
+    const toggle = root.querySelector(".editor-fold__toggle");
+    const bodyId = toggle && toggle.getAttribute("aria-controls");
+    const body = bodyId ? document.getElementById(bodyId) : null;
+    return toggle && body ? { root, toggle, body } : null;
+  }
+
+  function setFoldExpanded(name, expanded, options) {
+    const elements = foldElements(name);
+    if (!elements) {
+      return;
+    }
+    const settings = options || {};
+    const shouldExpand = Boolean(expanded);
+    elements.root.classList.toggle("is-collapsed", !shouldExpand);
+    elements.root.classList.toggle("is-suggested", Boolean(settings.suggested));
+    elements.toggle.setAttribute("aria-expanded", String(shouldExpand));
+    elements.body.hidden = !shouldExpand;
+    if (shouldExpand && isSmallViewport() && !settings.skipAccordion) {
+      Object.keys(editorInputGroups).forEach((groupName) => {
+        if (groupName !== name) {
+          setFoldExpanded(groupName, false, { skipAccordion: true });
+        }
+      });
+    }
+  }
+
+  function pulseSuggestedFold(name) {
+    const elements = foldElements(name);
+    if (!elements) {
+      return;
+    }
+    elements.root.classList.add("is-suggested");
+    window.setTimeout(() => {
+      elements.root.classList.remove("is-suggested");
+    }, 1800);
+  }
+
+  function expandPlanDrivenFolds(plan) {
+    const selection = readPlanSection(plan, "selection");
+    const background = readPlanSection(plan, "background");
+    const subject = readPlanSection(plan, "subject");
+    const effects = readPlanSection(plan, "effects");
+    const crop = readPlanSection(plan, "crop");
+    const activeGroups = [];
+    if ((selection.cleanup === false) || planInteger(selection.edge_offset, 0) || planInteger(selection.feather_px, 0)) activeGroups.push("selection");
+    if ((background.mode && background.mode !== "original") || planInteger(background.blur_px, 18) !== 18 || planInteger(background.brightness, 0) || planInteger(background.saturation, 0) || Boolean(background.grayscale)) activeGroups.push("background");
+    if (planInteger(subject.brightness, 0) || planInteger(subject.contrast, 0) || planInteger(subject.saturation, 0) || planInteger(subject.hue_degrees, 0) || planInteger(subject.temperature, 0) || planInteger(subject.sharpen, 0) || planInteger(subject.blur_px, 0) || planInteger(subject.opacity, 100) !== 100) activeGroups.push("subject");
+    if (planInteger(effects.outline_width_px, 0) || planInteger(effects.outline_opacity, 100) !== 100 || planInteger(effects.shadow_offset_x, 0) || planInteger(effects.shadow_offset_y, 0) || planInteger(effects.shadow_blur_px, 0) || planInteger(effects.shadow_opacity, 0)) activeGroups.push("effects");
+    if (Boolean(crop.enabled) || planInteger(crop.padding_px, 24) !== 24 || (typeof crop.aspect_ratio === "string" && crop.aspect_ratio !== "free")) activeGroups.push("crop");
+    if (!activeGroups.length) {
+      activeGroups.push("selection", "background");
+    }
+    activeGroups.forEach((name, index) => {
+      setFoldExpanded(name, true, { suggested: index === 0 });
+      pulseSuggestedFold(name);
+    });
   }
 
   function addPlanItem(label, value, swatch) {
@@ -776,42 +917,70 @@
     processPlanItems.append(item);
   }
 
-  function renderProcessPlan(plan) {
+  function renderProcessPlan(plan, planNotice) {
     processPlanItems.replaceChildren();
     const target = plan && typeof plan.target === "string" ? plan.target.trim().slice(0, 80) : "";
     if (!target) {
       processPlan.hidden = true;
-      processPlanNote.textContent = "";
+      processPlanNote.textContent = typeof planNotice === "string" ? planNotice : "";
       return;
     }
 
-    const selection = plan.selection && typeof plan.selection === "object" ? plan.selection : {};
-    const background = plan.background && typeof plan.background === "object" ? plan.background : {};
-    const subject = plan.subject && typeof plan.subject === "object" ? plan.subject : {};
-    addPlanItem("保留对象", target);
+    const reasonCode = plan && typeof plan.reason_code === "string" ? plan.reason_code : "";
+    if (reasonCode === "selection_only") {
+      addPlanItem("处理主体", target);
+      addPlanItem("处理", "只生成选区");
+      processPlanSource.textContent = "已校验";
+      processPlanNote.textContent = typeof planNotice === "string" && planNotice.trim()
+        ? planNotice.trim()
+        : "这次只会生成可检查、可微调的选区，不会直接套用编辑效果。";
+      processPlan.hidden = false;
+      return;
+    }
+
+    const selection = readPlanSection(plan, "selection");
+    const background = readPlanSection(plan, "background");
+    const subject = readPlanSection(plan, "subject");
+    const effects = readPlanSection(plan, "effects");
+    const crop = readPlanSection(plan, "crop");
+    addPlanItem("处理主体", target);
 
     const backgroundMode = typeof background.mode === "string" ? background.mode : "original";
+    const backgroundAdjustments = [];
+    const backgroundBrightnessValue = planInteger(background.brightness, 0);
+    const backgroundSaturationValue = planInteger(background.saturation, 0);
+    if (backgroundBrightnessValue) backgroundAdjustments.push("亮度 " + signedValue(backgroundBrightnessValue));
+    if (backgroundSaturationValue) backgroundAdjustments.push("饱和度 " + signedValue(backgroundSaturationValue));
+    if (background.grayscale) backgroundAdjustments.push("灰度");
     if (backgroundMode === "transparent") {
-      addPlanItem("背景", "透明背景", { className: "process-plan-swatch--transparent" });
+      addPlanItem("背景", ["透明背景"].concat(backgroundAdjustments).join(" · "), { className: "process-plan-swatch--transparent" });
     } else if (backgroundMode === "color") {
-      const color = typeof background.color === "string" && /^#[0-9a-f]{6}$/i.test(background.color)
-        ? background.color.toUpperCase()
-        : "#FFFFFF";
-      addPlanItem("背景", color === "#FFFFFF" ? "白色背景" : "纯色背景 " + color, { color });
+      const color = validHexColor(background.color, "#FFFFFF");
+      addPlanItem("背景", [color === "#FFFFFF" ? "白色背景" : "纯色背景 " + color].concat(backgroundAdjustments).join(" · "), { color });
     } else if (backgroundMode === "blur") {
       const blur = planInteger(background.blur_px, 18);
-      addPlanItem("背景", "虚化 " + String(blur) + " px", { className: "process-plan-swatch--blur" });
+      addPlanItem("背景", ["虚化 " + String(blur) + " px"].concat(backgroundAdjustments).join(" · "), { className: "process-plan-swatch--blur" });
     } else {
-      addPlanItem("背景", "保留原背景");
+      addPlanItem("背景", backgroundAdjustments.length ? "保留原背景 · " + backgroundAdjustments.join(" · ") : "保留原背景");
     }
 
     const subjectAdjustments = [];
     const brightness = planInteger(subject.brightness, 0);
+    const contrast = planInteger(subject.contrast, 0);
     const saturation = planInteger(subject.saturation, 0);
+    const hueDegrees = planInteger(subject.hue_degrees, 0);
+    const temperature = planInteger(subject.temperature, 0);
+    const sharpen = planInteger(subject.sharpen, 0);
     const blur = planInteger(subject.blur_px, 0);
+    const opacity = planInteger(subject.opacity, 100);
     if (brightness) subjectAdjustments.push("亮度 " + (brightness > 0 ? "+" : "") + String(brightness));
+    if (contrast) subjectAdjustments.push("对比度 " + signedValue(contrast));
     if (saturation) subjectAdjustments.push("饱和度 " + (saturation > 0 ? "+" : "") + String(saturation));
+    if (hueDegrees) subjectAdjustments.push("色相 " + signedValue(hueDegrees) + "°");
+    if (temperature) subjectAdjustments.push("冷暖 " + signedValue(temperature));
+    if (sharpen) subjectAdjustments.push("锐化 " + String(sharpen));
     if (blur) subjectAdjustments.push("柔化 " + String(blur) + " px");
+    if (opacity !== 100) subjectAdjustments.push("不透明度 " + String(opacity) + "%");
     addPlanItem("主体", subjectAdjustments.length ? subjectAdjustments.join(" · ") : "保持原样");
 
     const edgeAdjustments = [];
@@ -822,8 +991,33 @@
     if (feather) edgeAdjustments.push("羽化 " + String(feather) + " px");
     addPlanItem("边缘", edgeAdjustments.length ? edgeAdjustments.join(" · ") : "保持原样");
 
+    const effectAdjustments = [];
+    const outlineWidth = planInteger(effects.outline_width_px, 0);
+    const outlineOpacityValue = planInteger(effects.outline_opacity, 100);
+    const shadowX = planInteger(effects.shadow_offset_x, 0);
+    const shadowY = planInteger(effects.shadow_offset_y, 0);
+    const shadowBlurValue = planInteger(effects.shadow_blur_px, 0);
+    const shadowOpacityValue = planInteger(effects.shadow_opacity, 0);
+    if (outlineWidth) effectAdjustments.push("描边 " + String(outlineWidth) + " px");
+    if (outlineWidth && outlineOpacityValue !== 100) effectAdjustments.push("描边透明度 " + String(outlineOpacityValue) + "%");
+    if (shadowX || shadowY || shadowBlurValue || shadowOpacityValue) {
+      effectAdjustments.push("阴影 " + String(shadowX) + "," + String(shadowY));
+      if (shadowBlurValue) effectAdjustments.push("模糊 " + String(shadowBlurValue) + " px");
+      if (shadowOpacityValue) effectAdjustments.push("透明度 " + String(shadowOpacityValue) + "%");
+    }
+    addPlanItem("样式", effectAdjustments.length ? effectAdjustments.join(" · ") : "无额外样式");
+
+    const cropEnabledValue = Boolean(crop.enabled);
+    const cropPaddingValue = planInteger(crop.padding_px, 24);
+    const cropRatioValue = typeof crop.aspect_ratio === "string" ? crop.aspect_ratio : "free";
+    addPlanItem("画布", cropEnabledValue
+      ? "裁切 · 留白 " + String(cropPaddingValue) + " px · 比例 " + cropRatioValue
+      : "不裁切");
+
     processPlanSource.textContent = "已校验";
-    processPlanNote.textContent = "展示的是服务端已校验的执行项；不会删除、补全、换物或改动其他主体。";
+    processPlanNote.textContent = typeof planNotice === "string" && planNotice.trim()
+      ? planNotice.trim()
+      : "展示的是服务端已校验的执行项；不会删除、补全、换物或改动其他主体。";
     processPlan.hidden = false;
   }
 
@@ -882,7 +1076,11 @@
       ? state.oneClickPlan.target.trim()
       : "";
     let message = state.oneClickMessage || "正在准备处理。";
-    if (phase === "ready_to_apply") {
+    if (phase === "selection_ready") {
+      message = target
+        ? "已找到「" + target + "」并生成选区。现在可以直接检查或继续微调。"
+        : "选区已生成。现在可以直接检查或继续微调。";
+    } else if (phase === "ready_to_apply") {
       message = target
         ? "已找到「" + target + "」并生成选区。确认后才会生成编辑预览。"
         : "选区已生成。确认后才会生成编辑预览。";
@@ -901,9 +1099,12 @@
       tone: meta.tone,
       message,
       plan: state.oneClickPlan,
+      planNotice: state.oneClickPlanNotice,
       assurance: phase === "ready_to_apply"
         ? "确认前不会修改图片；原图始终保留。"
-        : "原图不会被覆盖；生成的是可继续调整的预览。",
+        : phase === "selection_ready"
+          ? "这一步只生成选区；原图始终保留，之后仍可继续微调。"
+          : "原图不会被覆盖；生成的是可继续调整的预览。",
     };
   }
 
@@ -974,7 +1175,7 @@
       stage: kind === "error" ? "需要处理" : hasImage ? "等待描述" : "等待图片",
       step: kind === "working" && hasImage ? 1 : 0,
       tone,
-      message: state.noticeMessage || "上传一张图片后，描述要保留的对象和想做的处理。",
+      message: state.noticeMessage || "上传图片后，说出要处理的主体；效果可以一起说。",
       plan: null,
       assurance: "一次处理一个画面中可见的主体；原图始终保留。",
     };
@@ -999,14 +1200,17 @@
       if (model.phase === "ready_to_apply") {
         addProcessAction("确认并生成预览", "button--primary", confirmOneClickPlan);
         addProcessAction("修改需求", "button--secondary", () => focusDescription("可以修改描述后重新处理。"));
+      } else if (model.phase === "selection_ready") {
+        addProcessAction("继续微调", "button--primary", openEditor);
+        addProcessAction("修改需求", "button--secondary", () => focusDescription("如果还想换背景、调色或加样式，可以继续补充。"));
       } else if (model.phase === "needs_target_confirmation") {
         addProcessAction("修改需求", "button--secondary", () => focusDescription("可以补充位置或外观后重新处理。"));
         addProcessAction("改用手动选区", "button--secondary", switchToManualSelection);
       } else if (model.phase === "needs_input") {
-        addProcessAction("补充需求", "button--primary", () => focusDescription("请补充要保留的主体，以及背景或局部效果。"));
+        addProcessAction("补充需求", "button--primary", () => focusDescription("请先说明要处理的主体；如果还想换背景或调色，也可以一起说。"));
         addProcessAction("改用手动选区", "button--secondary", switchToManualSelection);
       } else if (model.phase === "unsupported") {
-        addProcessAction("修改需求", "button--secondary", () => focusDescription("可尝试抠图、白底、纯色、背景虚化或局部调整。"));
+        addProcessAction("修改需求", "button--secondary", () => focusDescription("可尝试换背景、主体调色、描边阴影或按主体裁切。"));
       } else if (model.phase === "failed") {
         addProcessAction("重新处理", "button--primary", startOneClick);
         addProcessAction("改用手动选区", "button--secondary", switchToManualSelection);
@@ -1055,7 +1259,7 @@
       stepElement.classList.toggle("is-complete", complete);
       stepElement.classList.toggle("is-current", !complete && step === model.step && model.step > 0);
     });
-    renderProcessPlan(model.plan);
+    renderProcessPlan(model.plan, model.planNotice);
     renderProcessActions(model);
   }
 
@@ -1083,9 +1287,11 @@
     if (!plan || typeof plan !== "object") {
       return;
     }
-    const selection = plan.selection && typeof plan.selection === "object" ? plan.selection : {};
-    const background = plan.background && typeof plan.background === "object" ? plan.background : {};
-    const subject = plan.subject && typeof plan.subject === "object" ? plan.subject : {};
+    const selection = readPlanSection(plan, "selection");
+    const background = readPlanSection(plan, "background");
+    const subject = readPlanSection(plan, "subject");
+    const effects = readPlanSection(plan, "effects");
+    const crop = readPlanSection(plan, "crop");
     const assign = (input, value) => {
       if (!input || !Number.isFinite(Number(value))) return;
       input.value = String(Math.round(Number(value)));
@@ -1096,10 +1302,30 @@
     if (backgroundMode && typeof background.mode === "string") backgroundMode.value = background.mode;
     if (backgroundColor && typeof background.color === "string" && /^#[0-9a-f]{6}$/i.test(background.color)) backgroundColor.value = background.color;
     assign(backgroundBlurPx, background.blur_px);
+    assign(backgroundBrightness, background.brightness);
+    assign(backgroundSaturation, background.saturation);
+    if (backgroundGrayscale && typeof background.grayscale === "boolean") backgroundGrayscale.checked = background.grayscale;
     assign(subjectBrightness, subject.brightness);
+    assign(subjectContrast, subject.contrast);
     assign(subjectSaturation, subject.saturation);
+    assign(subjectHueDegrees, subject.hue_degrees);
+    assign(subjectTemperature, subject.temperature);
+    assign(subjectSharpen, subject.sharpen);
     assign(subjectBlurPx, subject.blur_px);
+    assign(subjectOpacity, subject.opacity);
+    assign(outlineWidthPx, effects.outline_width_px);
+    if (outlineColor && typeof effects.outline_color === "string" && /^#[0-9a-f]{6}$/i.test(effects.outline_color)) outlineColor.value = effects.outline_color;
+    assign(outlineOpacity, effects.outline_opacity);
+    assign(shadowOffsetX, effects.shadow_offset_x);
+    assign(shadowOffsetY, effects.shadow_offset_y);
+    assign(shadowBlurPx, effects.shadow_blur_px);
+    if (shadowColor && typeof effects.shadow_color === "string" && /^#[0-9a-f]{6}$/i.test(effects.shadow_color)) shadowColor.value = effects.shadow_color;
+    assign(shadowOpacity, effects.shadow_opacity);
+    if (cropEnabled && typeof crop.enabled === "boolean") cropEnabled.checked = crop.enabled;
+    assign(cropPaddingPx, crop.padding_px);
+    if (cropAspectRatio && typeof crop.aspect_ratio === "string") cropAspectRatio.value = crop.aspect_ratio;
     syncEditControls();
+    expandPlanDrivenFolds(plan);
   }
 
   function applyOneClickRun(run) {
@@ -1110,6 +1336,7 @@
     state.oneClickPhase = run.phase;
     state.oneClickMessage = typeof run.message === "string" ? run.message : "正在处理。";
     state.oneClickPlan = run.plan && typeof run.plan === "object" ? run.plan : null;
+    state.oneClickPlanNotice = typeof run.plan_notice === "string" ? run.plan_notice : "";
     state.oneClickCandidates = Array.isArray(run.candidates) ? run.candidates.slice(0, 3) : [];
     state.oneClickSelectedCandidateIndex = Number.isInteger(run.selected_candidate_index)
       ? run.selected_candidate_index
@@ -1340,8 +1567,10 @@
       state.showingEdit = false;
     }
     state.image = image;
-    state.width = width;
-    state.height = height;
+    if (!settings.preserveSourceDimensions) {
+      state.width = width;
+      state.height = height;
+    }
     canvas.width = Math.max(2, Math.round(width * scale));
     canvas.height = Math.max(2, Math.round(height * scale));
     canvasEmpty.hidden = true;
@@ -1577,9 +1806,18 @@
       if (editResult) editResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
+    if (phase === "selection_ready") {
+      if (!showOneClickSegmentation(run)) {
+        throw new Error("选区已生成，但没有找到可显示的预览。请刷新后重试。 ");
+      }
+      syncOneClickPlanToEditor(run.plan);
+      setBusy(false);
+      setStatus("选区已准备好。可直接检查边界，或继续微调。", "success");
+      return;
+    }
     if (phase === "needs_target_confirmation") {
       setBusy(false);
-      setStatus(run.message || "请确认要保留的对象。", "");
+      setStatus(run.message || "请确认要处理的对象。", "");
       return;
     }
     if (phase === "needs_input") {
@@ -1606,7 +1844,12 @@
     }
     syncOneClickPlanToEditor(run.plan);
     setBusy(false);
-    setStatus("选区和方案已准备好，请确认后生成预览。", "success");
+    setStatus(
+      run.phase === "selection_ready"
+        ? "选区已准备好。可直接检查边界，或继续微调。"
+        : "选区和方案已准备好，请确认后生成预览。",
+      "success",
+    );
   }
 
   async function applyOneClickEdit() {
@@ -1668,7 +1911,7 @@
         state.oneClickPollTimer = window.setTimeout(pollOneClickRun, pollIntervalMs);
         return;
       }
-      if (run.phase === "ready_to_apply") {
+      if (run.phase === "selection_ready" || run.phase === "ready_to_apply") {
         await enterOneClickReview(run);
         return;
       }
@@ -1690,7 +1933,7 @@
       return;
     }
     if (!description.value.trim()) {
-      setStatus("请说明主体和效果。", "error");
+      setStatus("请先说明要处理的主体。", "error");
       return;
     }
     clearAgentState();
@@ -1701,6 +1944,7 @@
     state.oneClickPhase = "planning";
     state.oneClickMessage = "正在准备处理。";
     state.oneClickPlan = null;
+    state.oneClickPlanNotice = "";
     state.oneClickCandidates = [];
     state.oneClickSelectedCandidateIndex = null;
     state.processJob = null;
@@ -1721,7 +1965,7 @@
       if (job) updateJobCard(job);
       if (run.phase === "segmenting" || run.phase === "composing") {
         await pollOneClickRun();
-      } else if (run.phase === "ready_to_apply") {
+      } else if (run.phase === "selection_ready" || run.phase === "ready_to_apply") {
         await enterOneClickReview(run);
       } else {
         await finishOneClickRun(run);
@@ -1752,7 +1996,7 @@
       if (job) updateJobCard(job);
       if (run.phase === "segmenting" || run.phase === "composing") {
         await pollOneClickRun();
-      } else if (run.phase === "ready_to_apply") {
+      } else if (run.phase === "selection_ready" || run.phase === "ready_to_apply") {
         await enterOneClickReview(run);
       } else {
         await finishOneClickRun(run);
@@ -2002,24 +2246,144 @@
     return value > 0 ? "+" + String(value) : String(value);
   }
 
+  function numberSummary(label, value, unit) {
+    return label + " " + signedValue(value) + (unit || "");
+  }
+
+  function pxSummary(label, value) {
+    return label + " " + String(value) + " px";
+  }
+
+  function getFoldSummaryState() {
+    const selectionSummary = [];
+    const edge = editNumber(edgeOffset, 0);
+    const feather = editNumber(featherPx, 0);
+    if (state.maskStrokes.length) selectionSummary.push(String(state.maskStrokes.length) + " 条笔刷");
+    if (!Boolean(maskCleanup && maskCleanup.checked)) selectionSummary.push("关闭清理");
+    if (edge) selectionSummary.push(edge > 0 ? "扩展 " + String(edge) + " px" : "收缩 " + String(Math.abs(edge)) + " px");
+    if (feather) selectionSummary.push("羽化 " + String(feather) + " px");
+
+    const backgroundSummary = [];
+    const mode = backgroundMode ? backgroundMode.value : "original";
+    const backgroundModeCopy = { original: "原背景", transparent: "透明", color: "纯色", blur: "虚化" };
+    backgroundSummary.push(backgroundModeCopy[mode] || "原背景");
+    const backgroundBrightnessValue = editNumber(backgroundBrightness, 0);
+    const backgroundSaturationValue = editNumber(backgroundSaturation, 0);
+    if (mode === "color") backgroundSummary.push(validHexColor(backgroundColor && backgroundColor.value, "#FFFFFF"));
+    if (mode === "blur") backgroundSummary.push(pxSummary("虚化", editNumber(backgroundBlurPx, 18)));
+    if (backgroundBrightnessValue) backgroundSummary.push(numberSummary("亮度", backgroundBrightnessValue));
+    if (backgroundSaturationValue) backgroundSummary.push(numberSummary("饱和度", backgroundSaturationValue));
+    if (backgroundGrayscale && backgroundGrayscale.checked) backgroundSummary.push("灰度");
+
+    const subjectSummary = [];
+    const subjectBrightnessValue = editNumber(subjectBrightness, 0);
+    const subjectContrastValue = editNumber(subjectContrast, 0);
+    const subjectSaturationValue = editNumber(subjectSaturation, 0);
+    const subjectHueValue = editNumber(subjectHueDegrees, 0);
+    const subjectTemperatureValue = editNumber(subjectTemperature, 0);
+    const subjectSharpenValue = editNumber(subjectSharpen, 0);
+    const subjectBlurValue = editNumber(subjectBlurPx, 0);
+    const subjectOpacityValue = editNumber(subjectOpacity, 100);
+    if (subjectBrightnessValue) subjectSummary.push(numberSummary("亮度", subjectBrightnessValue));
+    if (subjectContrastValue) subjectSummary.push(numberSummary("对比", subjectContrastValue));
+    if (subjectSaturationValue) subjectSummary.push(numberSummary("饱和度", subjectSaturationValue));
+    if (subjectHueValue) subjectSummary.push(numberSummary("色相", subjectHueValue, "°"));
+    if (subjectTemperatureValue) subjectSummary.push(numberSummary("冷暖", subjectTemperatureValue));
+    if (subjectSharpenValue) subjectSummary.push("锐化 " + String(subjectSharpenValue));
+    if (subjectBlurValue) subjectSummary.push(pxSummary("模糊", subjectBlurValue));
+    if (subjectOpacityValue !== 100) subjectSummary.push("透明度 " + String(subjectOpacityValue) + "%");
+
+    const effectsSummary = [];
+    const outlineWidthValue = editNumber(outlineWidthPx, 0);
+    const outlineOpacityValue = editNumber(outlineOpacity, 100);
+    const shadowXValue = editNumber(shadowOffsetX, 0);
+    const shadowYValue = editNumber(shadowOffsetY, 0);
+    const shadowBlurValue = editNumber(shadowBlurPx, 0);
+    const shadowOpacityValue = editNumber(shadowOpacity, 0);
+    if (outlineWidthValue) {
+      effectsSummary.push(pxSummary("描边", outlineWidthValue));
+      if (outlineOpacityValue !== 100) effectsSummary.push("描边透明度 " + String(outlineOpacityValue) + "%");
+    }
+    if (shadowXValue || shadowYValue || shadowBlurValue || shadowOpacityValue) {
+      effectsSummary.push("阴影 " + String(shadowXValue) + "," + String(shadowYValue));
+      if (shadowBlurValue) effectsSummary.push(pxSummary("模糊", shadowBlurValue));
+      if (shadowOpacityValue) effectsSummary.push("阴影透明度 " + String(shadowOpacityValue) + "%");
+    }
+
+    const cropSummary = [];
+    const cropEnabledValue = Boolean(cropEnabled && cropEnabled.checked);
+    const cropPaddingValue = editNumber(cropPaddingPx, 24);
+    const cropRatioValue = cropAspectRatio ? cropAspectRatio.value : "free";
+    if (cropEnabledValue) {
+      cropSummary.push("已裁切");
+      cropSummary.push(pxSummary("留白", cropPaddingValue));
+      cropSummary.push("比例 " + cropRatioValue);
+    }
+
+    return {
+      selection: selectionSummary.length ? selectionSummary.join(" · ") : "保持原样",
+      background: backgroundSummary.join(" · "),
+      subject: subjectSummary.length ? subjectSummary.join(" · ") : "保持原样",
+      effects: effectsSummary.length ? effectsSummary.join(" · ") : "无额外样式",
+      crop: cropSummary.length ? cropSummary.join(" · ") : "不裁切",
+    };
+  }
+
   function syncEditControls() {
     const brush = editNumber(maskBrushRadius, 24);
     const edge = editNumber(edgeOffset, 0);
     const feather = editNumber(featherPx, 0);
     const backgroundBlur = editNumber(backgroundBlurPx, 18);
+    const backgroundBrightnessLevel = editNumber(backgroundBrightness, 0);
+    const backgroundSaturationLevel = editNumber(backgroundSaturation, 0);
     const brightness = editNumber(subjectBrightness, 0);
+    const contrast = editNumber(subjectContrast, 0);
     const saturation = editNumber(subjectSaturation, 0);
+    const hueDegrees = editNumber(subjectHueDegrees, 0);
+    const temperature = editNumber(subjectTemperature, 0);
+    const sharpen = editNumber(subjectSharpen, 0);
     const subjectBlur = editNumber(subjectBlurPx, 0);
+    const opacity = editNumber(subjectOpacity, 100);
+    const outlineWidth = editNumber(outlineWidthPx, 0);
+    const outlineOpacityLevel = editNumber(outlineOpacity, 100);
+    const shadowX = editNumber(shadowOffsetX, 0);
+    const shadowY = editNumber(shadowOffsetY, 0);
+    const shadowBlurLevel = editNumber(shadowBlurPx, 0);
+    const shadowOpacityLevel = editNumber(shadowOpacity, 0);
+    const cropPadding = editNumber(cropPaddingPx, 24);
     if (maskBrushRadiusValue) maskBrushRadiusValue.textContent = String(brush) + " px";
     if (edgeOffsetValue) edgeOffsetValue.textContent = edge === 0 ? "不偏移" : edge > 0 ? "扩展 +" + String(edge) + " px" : "收缩 " + String(Math.abs(edge)) + " px";
     if (featherPxValue) featherPxValue.textContent = String(feather) + " px";
     if (backgroundBlurPxValue) backgroundBlurPxValue.textContent = String(backgroundBlur) + " px";
+    if (backgroundBrightnessValue) backgroundBrightnessValue.textContent = signedValue(backgroundBrightnessLevel);
+    if (backgroundSaturationValue) backgroundSaturationValue.textContent = signedValue(backgroundSaturationLevel);
     if (subjectBrightnessValue) subjectBrightnessValue.textContent = signedValue(brightness);
+    if (subjectContrastValue) subjectContrastValue.textContent = signedValue(contrast);
     if (subjectSaturationValue) subjectSaturationValue.textContent = signedValue(saturation);
+    if (subjectHueDegreesValue) subjectHueDegreesValue.textContent = signedValue(hueDegrees) + "°";
+    if (subjectTemperatureValue) subjectTemperatureValue.textContent = signedValue(temperature);
+    if (subjectSharpenValue) subjectSharpenValue.textContent = String(sharpen);
     if (subjectBlurPxValue) subjectBlurPxValue.textContent = String(subjectBlur) + " px";
+    if (subjectOpacityValue) subjectOpacityValue.textContent = String(opacity) + "%";
+    if (outlineWidthPxValue) outlineWidthPxValue.textContent = String(outlineWidth) + " px";
+    if (outlineOpacityValue) outlineOpacityValue.textContent = String(outlineOpacityLevel) + "%";
+    if (shadowOffsetXValue) shadowOffsetXValue.textContent = signedValue(shadowX) + " px";
+    if (shadowOffsetYValue) shadowOffsetYValue.textContent = signedValue(shadowY) + " px";
+    if (shadowBlurPxValue) shadowBlurPxValue.textContent = String(shadowBlurLevel) + " px";
+    if (shadowOpacityValue) shadowOpacityValue.textContent = String(shadowOpacityLevel) + "%";
+    if (cropPaddingPxValue) cropPaddingPxValue.textContent = String(cropPadding) + " px";
     const mode = backgroundMode ? backgroundMode.value : "original";
     if (backgroundColorRow) backgroundColorRow.hidden = mode !== "color";
     if (backgroundBlurRow) backgroundBlurRow.hidden = mode !== "blur";
+    const editorDisabled = state.busy || !editorAvailable();
+    if (cropPaddingPx) cropPaddingPx.disabled = editorDisabled || !(cropEnabled && cropEnabled.checked);
+    if (cropAspectRatio) cropAspectRatio.disabled = editorDisabled || !(cropEnabled && cropEnabled.checked);
+    const summaries = getFoldSummaryState();
+    if (foldSummarySelection) foldSummarySelection.textContent = summaries.selection;
+    if (foldSummaryBackground) foldSummaryBackground.textContent = summaries.background;
+    if (foldSummarySubject) foldSummarySubject.textContent = summaries.subject;
+    if (foldSummaryEffects) foldSummaryEffects.textContent = summaries.effects;
+    if (foldSummaryCrop) foldSummaryCrop.textContent = summaries.crop;
   }
 
   function resetEditControls(options) {
@@ -2031,9 +2395,28 @@
     if (backgroundMode) backgroundMode.value = "original";
     if (backgroundColor) backgroundColor.value = "#ffffff";
     if (backgroundBlurPx) backgroundBlurPx.value = "18";
+    if (backgroundBrightness) backgroundBrightness.value = "0";
+    if (backgroundSaturation) backgroundSaturation.value = "0";
+    if (backgroundGrayscale) backgroundGrayscale.checked = false;
     if (subjectBrightness) subjectBrightness.value = "0";
+    if (subjectContrast) subjectContrast.value = "0";
     if (subjectSaturation) subjectSaturation.value = "0";
+    if (subjectHueDegrees) subjectHueDegrees.value = "0";
+    if (subjectTemperature) subjectTemperature.value = "0";
+    if (subjectSharpen) subjectSharpen.value = "0";
     if (subjectBlurPx) subjectBlurPx.value = "0";
+    if (subjectOpacity) subjectOpacity.value = "100";
+    if (outlineWidthPx) outlineWidthPx.value = "0";
+    if (outlineColor) outlineColor.value = "#ffffff";
+    if (outlineOpacity) outlineOpacity.value = "100";
+    if (shadowOffsetX) shadowOffsetX.value = "0";
+    if (shadowOffsetY) shadowOffsetY.value = "0";
+    if (shadowBlurPx) shadowBlurPx.value = "0";
+    if (shadowColor) shadowColor.value = "#000000";
+    if (shadowOpacity) shadowOpacity.value = "0";
+    if (cropEnabled) cropEnabled.checked = false;
+    if (cropPaddingPx) cropPaddingPx.value = "24";
+    if (cropAspectRatio) cropAspectRatio.value = "free";
     state.maskStrokes = [];
     state.activeMaskStroke = null;
     state.maskOverlayVisible = true;
@@ -2050,6 +2433,11 @@
     }
     rebuildMaskOverlay();
     redraw();
+    setFoldExpanded("selection", true, { skipAccordion: true });
+    setFoldExpanded("background", !isSmallViewport(), { skipAccordion: true });
+    setFoldExpanded("subject", false, { skipAccordion: true });
+    setFoldExpanded("effects", false, { skipAccordion: true });
+    setFoldExpanded("crop", false, { skipAccordion: true });
     syncEditControls();
     refreshActions();
   }
@@ -2072,34 +2460,99 @@
         mode: backgroundMode ? backgroundMode.value : "original",
         color: backgroundColor ? backgroundColor.value : "#ffffff",
         blur_px: editNumber(backgroundBlurPx, 18),
+        brightness: editNumber(backgroundBrightness, 0),
+        saturation: editNumber(backgroundSaturation, 0),
+        grayscale: Boolean(backgroundGrayscale && backgroundGrayscale.checked),
       },
       subject: {
         brightness: editNumber(subjectBrightness, 0),
+        contrast: editNumber(subjectContrast, 0),
         saturation: editNumber(subjectSaturation, 0),
+        hue_degrees: editNumber(subjectHueDegrees, 0),
+        temperature: editNumber(subjectTemperature, 0),
+        sharpen: editNumber(subjectSharpen, 0),
         blur_px: editNumber(subjectBlurPx, 0),
+        opacity: editNumber(subjectOpacity, 100),
+      },
+      effects: {
+        outline_width_px: editNumber(outlineWidthPx, 0),
+        outline_color: outlineColor ? outlineColor.value : "#ffffff",
+        outline_opacity: editNumber(outlineOpacity, 100),
+        shadow_offset_x: editNumber(shadowOffsetX, 0),
+        shadow_offset_y: editNumber(shadowOffsetY, 0),
+        shadow_blur_px: editNumber(shadowBlurPx, 0),
+        shadow_color: shadowColor ? shadowColor.value : "#000000",
+        shadow_opacity: editNumber(shadowOpacity, 0),
+      },
+      crop: {
+        enabled: Boolean(cropEnabled && cropEnabled.checked),
+        padding_px: editNumber(cropPaddingPx, 24),
+        aspect_ratio: cropAspectRatio ? cropAspectRatio.value : "free",
       },
     };
   }
 
   function editSummaryText(settings) {
     const pieces = [];
-    const mode = settings && settings.background_mode;
+    const selectionSettings = settings && settings.selection && typeof settings.selection === "object" ? settings.selection : settings || {};
+    const backgroundSettings = settings && settings.background && typeof settings.background === "object" ? settings.background : settings || {};
+    const subjectSettings = settings && settings.subject && typeof settings.subject === "object" ? settings.subject : settings || {};
+    const effectSettings = settings && settings.effects && typeof settings.effects === "object" ? settings.effects : settings || {};
+    const cropSettings = settings && settings.crop && typeof settings.crop === "object" ? settings.crop : settings || {};
+    const mode = backgroundSettings.background_mode || backgroundSettings.mode;
     const backgroundCopy = { original: "保留原背景", transparent: "透明背景", color: "纯色背景", blur: "背景虚化" };
     pieces.push(backgroundCopy[mode] || "局部编辑");
     if (settings && Array.isArray(settings.strokes) && settings.strokes.length) {
       pieces.push(String(settings.strokes.length) + " 条选区笔刷");
     }
-    if (settings && settings.edge_offset) {
-      pieces.push(settings.edge_offset > 0 ? "边缘扩展" : "边缘收缩");
+    if (selectionSettings.edge_offset) {
+      pieces.push(selectionSettings.edge_offset > 0 ? "边缘扩展" : "边缘收缩");
     }
-    if (settings && settings.feather_px) {
-      pieces.push("羽化 " + String(settings.feather_px) + " px");
+    if (selectionSettings.feather_px) {
+      pieces.push("羽化 " + String(selectionSettings.feather_px) + " px");
     }
-    if (settings && settings.subject_brightness) {
-      pieces.push("亮度 " + signedValue(settings.subject_brightness));
+    if (backgroundSettings.background_brightness || backgroundSettings.brightness) {
+      pieces.push("背景亮度 " + signedValue(planInteger(backgroundSettings.background_brightness || backgroundSettings.brightness, 0)));
     }
-    if (settings && settings.subject_saturation) {
-      pieces.push("饱和度 " + signedValue(settings.subject_saturation));
+    if (backgroundSettings.background_saturation || backgroundSettings.saturation) {
+      pieces.push("背景饱和度 " + signedValue(planInteger(backgroundSettings.background_saturation || backgroundSettings.saturation, 0)));
+    }
+    if (backgroundSettings.background_grayscale || backgroundSettings.grayscale) {
+      pieces.push("背景灰度");
+    }
+    if (subjectSettings.subject_brightness || subjectSettings.brightness) {
+      pieces.push("亮度 " + signedValue(planInteger(subjectSettings.subject_brightness || subjectSettings.brightness, 0)));
+    }
+    if (subjectSettings.subject_contrast || subjectSettings.contrast) {
+      pieces.push("对比度 " + signedValue(planInteger(subjectSettings.subject_contrast || subjectSettings.contrast, 0)));
+    }
+    if (subjectSettings.subject_saturation || subjectSettings.saturation) {
+      pieces.push("饱和度 " + signedValue(planInteger(subjectSettings.subject_saturation || subjectSettings.saturation, 0)));
+    }
+    if (subjectSettings.subject_hue_degrees || subjectSettings.hue_degrees) {
+      pieces.push("色相 " + signedValue(planInteger(subjectSettings.subject_hue_degrees || subjectSettings.hue_degrees, 0)) + "°");
+    }
+    if (subjectSettings.subject_temperature || subjectSettings.temperature) {
+      pieces.push("冷暖 " + signedValue(planInteger(subjectSettings.subject_temperature || subjectSettings.temperature, 0)));
+    }
+    if (subjectSettings.subject_sharpen || subjectSettings.sharpen) {
+      pieces.push("锐化 " + String(planInteger(subjectSettings.subject_sharpen || subjectSettings.sharpen, 0)));
+    }
+    if (subjectSettings.subject_blur_px || subjectSettings.blur_px) {
+      pieces.push("柔化 " + String(planInteger(subjectSettings.subject_blur_px || subjectSettings.blur_px, 0)) + " px");
+    }
+    const opacityValue = subjectSettings.subject_opacity || subjectSettings.opacity;
+    if (Number.isFinite(Number(opacityValue)) && planInteger(opacityValue, 100) !== 100) {
+      pieces.push("透明度 " + String(planInteger(opacityValue, 100)) + "%");
+    }
+    if (effectSettings.outline_width_px) {
+      pieces.push("描边 " + String(planInteger(effectSettings.outline_width_px, 0)) + " px");
+    }
+    if (effectSettings.shadow_offset_x || effectSettings.shadow_offset_y || effectSettings.shadow_blur_px || effectSettings.shadow_opacity) {
+      pieces.push("已加阴影");
+    }
+    if (cropSettings.enabled || cropSettings.crop_enabled) {
+      pieces.push("已裁切");
     }
     return pieces.join("；") + "。";
   }
@@ -2110,7 +2563,10 @@
       image.onload = () => {
         state.editImage = image;
         state.showingEdit = true;
-        displayCanvasImage(image, state.width, state.height, { asBase: false });
+        displayCanvasImage(image, image.naturalWidth, image.naturalHeight, {
+          asBase: false,
+          preserveSourceDimensions: true,
+        });
         resolve();
       };
       image.onerror = () => reject(new Error("编辑图片已经生成，但浏览器未能显示预览。"));
@@ -2140,18 +2596,26 @@
       setStatus("请先完成或更新选区，再开始局部编辑。", "error");
       return;
     }
+    const payload = buildEditPayload();
+    if (payload.background.mode === "original" && payload.subject.opacity < 100) {
+      setFoldExpanded("subject", true);
+      setStatus("降低主体透明度时，请先选择透明、纯色或虚化背景。", "error");
+      return;
+    }
     setBusy(true, "edit");
-    setStatus("正在按原图尺寸合成编辑预览…", "working");
+    setStatus("正在合成高清编辑预览…", "working");
     try {
       const response = await fetch("/api/edits", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildEditPayload()),
+        body: JSON.stringify(payload),
       });
       const result = await readResponse(response);
       await displayEditResult(result);
       setBusy(false);
-      setStatus("编辑预览已生成；下载按钮会导出原图尺寸 PNG。", "success");
+      setStatus(payload.crop.enabled
+        ? "编辑预览已生成；下载按钮会导出裁切后的高清 PNG。"
+        : "编辑预览已生成；下载按钮会导出原图尺寸 PNG。", "success");
     } catch (error) {
       setBusy(false);
       setStatus(error.message, "error");
@@ -2167,7 +2631,10 @@
       displayCanvasImage(state.baseImage, state.width, state.height, { asBase: false });
     } else {
       state.showingEdit = true;
-      displayCanvasImage(state.editImage, state.width, state.height, { asBase: false });
+      displayCanvasImage(state.editImage, state.editImage.naturalWidth, state.editImage.naturalHeight, {
+        asBase: false,
+        preserveSourceDimensions: true,
+      });
     }
     refreshActions();
   }
@@ -2347,13 +2814,38 @@
       setStatus("编辑设置已恢复默认；原始选区仍然保留。", "");
     });
   }
+  editorFoldToggles.forEach((toggle) => {
+    toggle.addEventListener("click", () => {
+      const root = toggle.closest("[data-editor-fold]");
+      const name = root ? root.getAttribute("data-editor-fold") : null;
+      if (!name) {
+        return;
+      }
+      const expanded = toggle.getAttribute("aria-expanded") === "true";
+      setFoldExpanded(name, !expanded);
+    });
+  });
   editorInputs.forEach((input) => {
     input.addEventListener("input", syncEditControls);
     input.addEventListener("change", syncEditControls);
   });
+  window.addEventListener("resize", () => {
+    if (!isSmallViewport()) {
+      return;
+    }
+    const expandedNames = Object.keys(editorInputGroups).filter((name) => {
+      const elements = foldElements(name);
+      return elements && elements.toggle.getAttribute("aria-expanded") === "true";
+    });
+    expandedNames.slice(1).forEach((name) => setFoldExpanded(name, false, { skipAccordion: true }));
+  });
 
   canvas.addEventListener("pointerdown", (event) => {
     if (!state.image || !state.imageId || state.busy) {
+      return;
+    }
+    if (state.showingEdit) {
+      setStatus("当前显示编辑预览；先点“查看原图”再调整选区。", "");
       return;
     }
     const point = pointFromEvent(event);
@@ -2465,6 +2957,11 @@
     clearLocalPreview();
   });
 
+  setFoldExpanded("selection", true, { skipAccordion: true });
+  setFoldExpanded("background", !isSmallViewport(), { skipAccordion: true });
+  setFoldExpanded("subject", false, { skipAccordion: true });
+  setFoldExpanded("effects", false, { skipAccordion: true });
+  setFoldExpanded("crop", false, { skipAccordion: true });
   setMode("positive");
   syncEditControls();
   renderOneClickPanel();
