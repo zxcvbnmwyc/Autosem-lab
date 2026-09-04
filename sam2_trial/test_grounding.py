@@ -18,6 +18,7 @@ from grounding import (
     _model_request,
     _one_click_edit_request,
     _model_response_text,
+    normalise_one_click_plan_for_instruction,
     parse_one_click_edit_plan,
     parse_grounding_payload,
 )
@@ -38,6 +39,39 @@ class _FakeResponse:
 
 
 class GroundingTests(unittest.TestCase):
+    @staticmethod
+    def _policy_plan(
+        *,
+        status: str = "ready",
+        target: str | None = "黄色奶酪",
+        reason_code: str | None = None,
+        background_mode: str = "original",
+        background_color: str = "#ffffff",
+        background_blur_px: int = 0,
+        subject_brightness: int = 0,
+        shadow_opacity: int = 0,
+    ) -> OneClickEditPlan:
+        value: dict = {
+            "status": status,
+            "target": target,
+            "reason_code": reason_code,
+            "selection": {"edge_offset": 2, "feather_px": 4, "cleanup": True},
+            "background": {
+                "mode": background_mode,
+                "color": background_color,
+                "blur_px": background_blur_px,
+            },
+            "subject": {"brightness": subject_brightness},
+            "effects": {
+                "shadow_offset_y": 8 if shadow_opacity else 0,
+                "shadow_blur_px": 12 if shadow_opacity else 0,
+                "shadow_opacity": shadow_opacity,
+            },
+            "crop": {},
+            "summary": "model summary",
+        }
+        return parse_one_click_edit_plan(value)
+
     def test_found_box_maps_to_original_image_coordinates(self) -> None:
         proposal = parse_grounding_payload(
             {
@@ -381,6 +415,8 @@ class GroundingTests(unittest.TestCase):
         self.assertIn("如果只输入主体而没有效果", system["content"])
         self.assertIn('reason_code="selection_only"', system["content"])
         self.assertIn("完全没有主体或对象指代", system["content"])
+        self.assertIn("从自然语言中提取真正承受动作或被指代的一个可见对象", system["content"])
+        self.assertIn("Use the image to preserve useful location, shape, boundary, contrast, color, or texture cues", system["content"])
         self.assertIn('reason_code="unsupported_effect_omitted"', system["content"])
         self.assertIn("圆形体", system["content"])
         self.assertIn("弄出来", system["content"])
@@ -412,6 +448,351 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(plan.target, "the cup")
         self.assertEqual(plan.as_edit_settings()["background_mode"], "original")
         self.assertEqual(plan.as_edit_settings()["subject_opacity"], 100)
+
+    def test_bare_subject_deterministically_becomes_default_selection_only(self) -> None:
+        model_plan = self._policy_plan(
+            background_mode="transparent", subject_brightness=18, shadow_opacity=40
+        )
+        plan = normalise_one_click_plan_for_instruction(model_plan, "中间的黄色奶酪")
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.target, "黄色奶酪")
+        self.assertEqual(plan.reason_code, "selection_only")
+        self.assertEqual(plan.selection, {"edge_offset": 0, "feather_px": 0, "cleanup": True})
+        self.assertEqual(plan.background["mode"], "original")
+        self.assertEqual(plan.subject["brightness"], 0)
+        self.assertEqual(plan.effects["shadow_opacity"], 0)
+
+    def test_explicit_cutout_deterministically_forces_transparent_background(self) -> None:
+        model_plan = self._policy_plan(background_mode="original")
+        plan = normalise_one_click_plan_for_instruction(
+            model_plan, "把黄色奶酪抠出来"
+        )
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.background["mode"], "transparent")
+        self.assertEqual(plan.background["blur_px"], 0)
+        self.assertEqual(plan.reason_code, "none")
+
+    def test_non_ready_white_background_falls_back_to_solid_white(self) -> None:
+        model_plan = self._policy_plan(
+            status="needs_input",
+            target="奶酪",
+            reason_code="missing_effect",
+            background_mode="original",
+        )
+        plan = normalise_one_click_plan_for_instruction(
+            model_plan, "保留奶酪，背景变白"
+        )
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.background["mode"], "color")
+        self.assertEqual(plan.background["color"], "#ffffff")
+        self.assertEqual(plan.reason_code, "none")
+
+    def test_common_explicit_background_colours_have_deterministic_fallbacks(self) -> None:
+        cases = {
+            "白色": "#ffffff",
+            "黑色": "#000000",
+            "红色": "#ff0000",
+            "蓝色": "#0000ff",
+            "绿色": "#008000",
+            "灰色": "#808080",
+            "黄色": "#ffff00",
+            "white": "#ffffff",
+            "black": "#000000",
+            "red": "#ff0000",
+            "blue": "#0000ff",
+            "green": "#008000",
+            "gray": "#808080",
+            "yellow": "#ffff00",
+        }
+        for colour, expected in cases.items():
+            with self.subTest(colour=colour):
+                instruction = (
+                    f"保留奶酪，背景换成{colour}"
+                    if not colour.isascii()
+                    else f"keep the cheese, use a {colour} background"
+                )
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        status="needs_input",
+                        target="奶酪",
+                        reason_code="missing_effect",
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "color")
+                self.assertEqual(plan.background["color"], expected)
+
+    def test_clean_or_solid_background_without_colour_defaults_to_white(self) -> None:
+        for instruction in (
+            "给奶酪弄个干净背景",
+            "保留奶酪，换成纯色底",
+            "keep the cheese on a clean background",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        status="needs_input",
+                        target="奶酪",
+                        reason_code="missing_effect",
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "color")
+                self.assertEqual(plan.background["color"], "#ffffff")
+
+    def test_colloquial_background_blur_falls_back_to_radius_18(self) -> None:
+        for instruction in (
+            "保留奶酪，背景糊一点",
+            "让奶酪后面模糊些",
+            "keep the cheese and blur the background",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        status="needs_input",
+                        target="奶酪",
+                        reason_code="missing_effect",
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "blur")
+                self.assertEqual(plan.background["blur_px"], 18)
+
+    def test_ready_specific_background_values_are_preserved(self) -> None:
+        colour_plan = normalise_one_click_plan_for_instruction(
+            self._policy_plan(
+                background_mode="color", background_color="#f5f5dc"
+            ),
+            "保留奶酪，换成纯色底",
+        )
+        self.assertEqual(colour_plan.background["color"], "#f5f5dc")
+
+        blur_plan = normalise_one_click_plan_for_instruction(
+            self._policy_plan(background_mode="blur", background_blur_px=7),
+            "保留奶酪，背景模糊",
+        )
+        self.assertEqual(blur_plan.background["blur_px"], 7)
+
+    def test_explicit_blur_negation_overrides_a_model_blur(self) -> None:
+        for instruction in (
+            "保留奶酪，背景不要虚化",
+            "保留奶酪，不要让背景虚化",
+            "keep the cheese; do not blur the background",
+            "keep the cheese, don't make the background blurry",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        target="奶酪",
+                        background_mode="blur",
+                        background_blur_px=22,
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "original")
+                self.assertEqual(plan.background["blur_px"], 0)
+                self.assertEqual(plan.reason_code, "selection_only")
+
+    def test_blur_negation_without_a_subject_rejects_model_target_guess(self) -> None:
+        for instruction in (
+            "背景不要虚化",
+            "do not blur the background",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        target="模型猜的奶酪",
+                        background_mode="blur",
+                        background_blur_px=22,
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "needs_input")
+                self.assertIsNone(plan.target)
+                self.assertEqual(plan.reason_code, "missing_subject")
+                self.assertEqual(plan.background["mode"], "original")
+                self.assertEqual(plan.background["blur_px"], 0)
+
+    def test_later_background_colour_correction_overrides_model_colour(self) -> None:
+        for instruction in (
+            "保留奶酪，背景不要白色，改成蓝色",
+            "keep the cheese; don't use a white background, make it blue",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        target="奶酪",
+                        background_mode="color",
+                        background_color="#ffffff",
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "color")
+                self.assertEqual(plan.background["color"], "#0000ff")
+                self.assertEqual(plan.reason_code, "none")
+
+    def test_rejected_background_colour_suppresses_the_model_colour(self) -> None:
+        for instruction in (
+            "保留奶酪，不要白底",
+            "保留奶酪，不要把背景变白",
+            "保留奶酪，别让背景变白",
+            "keep the cheese; don't use a white background",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        target="奶酪",
+                        background_mode="color",
+                        background_color="#ffffff",
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "original")
+                self.assertEqual(plan.reason_code, "selection_only")
+
+    def test_ready_original_background_is_corrected_for_explicit_effect(self) -> None:
+        white = normalise_one_click_plan_for_instruction(
+            self._policy_plan(background_mode="original"),
+            "给奶酪换个白底",
+        )
+        self.assertEqual(white.background["mode"], "color")
+        self.assertEqual(white.background["color"], "#ffffff")
+
+        blurred = normalise_one_click_plan_for_instruction(
+            self._policy_plan(background_mode="original"),
+            "保留奶酪，背景糊一点",
+        )
+        self.assertEqual(blurred.background["mode"], "blur")
+        self.assertEqual(blurred.background["blur_px"], 18)
+
+    def test_background_replacement_wording_is_not_mislabeled_as_object_replacement(self) -> None:
+        for instruction in (
+            "给奶酪换成白底",
+            "把奶酪换成白色背景",
+            "keep the cheese and replace the background with white",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(
+                        status="needs_input",
+                        target="奶酪",
+                        reason_code="missing_effect",
+                    ),
+                    instruction,
+                )
+                self.assertEqual(plan.status, "ready")
+                self.assertEqual(plan.background["mode"], "color")
+                self.assertNotEqual(plan.reason_code, "unsupported_effect_omitted")
+
+    def test_negated_cutout_does_not_force_transparency(self) -> None:
+        model_plan = self._policy_plan(background_mode="original")
+        plan = normalise_one_click_plan_for_instruction(
+            model_plan, "保留黄色奶酪，不要抠图，保留原背景"
+        )
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.background["mode"], "original")
+        self.assertEqual(plan.reason_code, "selection_only")
+
+    def test_demonstrative_recovers_a_visual_target_when_model_omits_it(self) -> None:
+        model_plan = self._policy_plan(
+            status="needs_input", target=None, reason_code="missing_subject"
+        )
+        plan = normalise_one_click_plan_for_instruction(model_plan, "把这个弄出来")
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.target, "用户指代的图中主要可见物体")
+        self.assertEqual(plan.reason_code, "selection_only")
+
+    def test_effect_only_request_rejects_a_model_invented_subject(self) -> None:
+        for instruction in (
+            "背景透明",
+            "弄得好看一点",
+            "提亮",
+            "再亮一点",
+            "换个白底",
+            "背景糊一点",
+            "裁成1:1",
+        ):
+            with self.subTest(instruction=instruction):
+                plan = normalise_one_click_plan_for_instruction(
+                    self._policy_plan(target="模型猜的杯子"), instruction
+                )
+                self.assertEqual(plan.status, "needs_input")
+                self.assertIsNone(plan.target)
+                self.assertEqual(plan.reason_code, "missing_subject")
+
+    def test_effect_wording_with_an_explicit_subject_is_not_rejected(self) -> None:
+        brighter = normalise_one_click_plan_for_instruction(
+            self._policy_plan(target="奶酪", subject_brightness=12),
+            "奶酪再亮一点",
+        )
+        self.assertEqual(brighter.status, "ready")
+        self.assertEqual(brighter.target, "奶酪")
+        self.assertEqual(brighter.subject["brightness"], 12)
+
+        white = normalise_one_click_plan_for_instruction(
+            self._policy_plan(
+                status="needs_input",
+                target=None,
+                reason_code="missing_effect",
+            ),
+            "给奶酪换个白底",
+        )
+        self.assertEqual(white.status, "ready")
+        self.assertEqual(white.target, "奶酪")
+        self.assertEqual(white.background["mode"], "color")
+
+        blurred = normalise_one_click_plan_for_instruction(
+            self._policy_plan(
+                status="needs_input",
+                target=None,
+                reason_code="missing_effect",
+            ),
+            "让奶酪后面模糊一点",
+        )
+        self.assertEqual(blurred.status, "ready")
+        self.assertEqual(blurred.target, "奶酪")
+        self.assertEqual(blurred.background["mode"], "blur")
+
+    def test_unsupported_object_action_keeps_subject_but_omits_effect(self) -> None:
+        model_plan = self._policy_plan(
+            status="unsupported", target=None, reason_code="unsupported_operation"
+        )
+        plan = normalise_one_click_plan_for_instruction(
+            model_plan, "删掉路人并补全草地"
+        )
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.target, "路人")
+        self.assertEqual(plan.reason_code, "unsupported_effect_omitted")
+        self.assertEqual(plan.background["mode"], "original")
+        self.assertFalse(plan.crop["enabled"])
+
+    def test_unsupported_part_does_not_discard_independent_cutout(self) -> None:
+        model_plan = self._policy_plan(
+            status="unsupported", target="杯子", reason_code="unsupported_operation"
+        )
+        plan = normalise_one_click_plan_for_instruction(
+            model_plan, "把杯子换成机器人，背景透明"
+        )
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.target, "杯子")
+        self.assertEqual(plan.background["mode"], "transparent")
+        self.assertEqual(plan.reason_code, "unsupported_effect_omitted")
+
+    def test_blocking_question_is_not_erased_just_because_target_exists(self) -> None:
+        model_plan = self._policy_plan(
+            status="needs_input", target="杯子", reason_code="conflicting_effects"
+        )
+        plan = normalise_one_click_plan_for_instruction(
+            model_plan, "杯子的背景透明还是背景变白都可以"
+        )
+        self.assertEqual(plan.status, "needs_input")
+        self.assertEqual(plan.reason_code, "conflicting_effects")
 
     def test_one_click_plan_accepts_ready_unsupported_effect_omitted_reason_code(self) -> None:
         plan = parse_one_click_edit_plan(

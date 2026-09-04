@@ -73,6 +73,26 @@ class EditApiTests(unittest.TestCase):
         result = application._write_result(record, job, application._load_rgb(record), mask, 0.91, 0)
         return uploaded, result
 
+    def _upload_image(
+        self,
+        client,
+        color: tuple[int, int, int],
+        *,
+        size: tuple[int, int] = (12, 12),
+        name: str = "background.png",
+    ) -> dict:
+        image = Image.new("RGB", size, color)
+        encoded = io.BytesIO()
+        image.save(encoded, format="PNG")
+        encoded.seek(0)
+        response = client.post(
+            "/api/upload",
+            data={"image": (encoded, name)},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201)
+        return response.get_json()
+
     def test_edit_endpoint_outputs_full_size_transparent_png(self) -> None:
         uploaded, result = self._result()
         response = self.client.post(
@@ -160,6 +180,105 @@ class EditApiTests(unittest.TestCase):
             self.assertLess(output.size[0], 40)
         artifact.close()
 
+    def test_edit_endpoint_composites_an_owned_custom_background(self) -> None:
+        uploaded, result = self._result()
+        background = self._upload_image(self.client, (38, 170, 92))
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "background": {
+                    "mode": "image",
+                    "image_id": background["image_id"],
+                    "brightness": 0,
+                    "saturation": 0,
+                    "grayscale": False,
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        edited = response.get_json()
+        self.assertEqual(edited["settings"]["background_mode"], "image")
+        self.assertEqual(
+            edited["settings"]["background_image_id"], background["image_id"]
+        )
+        artifact = self.client.get(edited["download_url"])
+        self.assertEqual(artifact.status_code, 200)
+        with Image.open(io.BytesIO(artifact.data)) as output:
+            rgb = output.convert("RGB")
+            self.assertEqual(rgb.size, (40, 30))
+            self.assertEqual(rgb.getpixel((1, 1)), (38, 170, 92))
+            self.assertEqual(rgb.getpixel((18, 15)), (30, 65, 100))
+        artifact.close()
+
+    def test_edit_rejects_custom_background_from_another_session(self) -> None:
+        uploaded, result = self._result()
+        other_client = application.app.test_client()
+        background = self._upload_image(other_client, (38, 170, 92))
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "background": {
+                    "mode": "image",
+                    "image_id": background["image_id"],
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_edit_requires_an_uploaded_image_for_custom_background(self) -> None:
+        uploaded, result = self._result()
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "background": {"mode": "image"},
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("请先上传一张背景图片", response.get_json()["error"])
+
+    def test_edit_rejects_background_image_id_outside_image_mode(self) -> None:
+        uploaded, result = self._result()
+        background = self._upload_image(self.client, (38, 170, 92))
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "background": {
+                    "mode": "color",
+                    "image_id": background["image_id"],
+                    "color": "#ffffff",
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("只有自定义图片背景", response.get_json()["error"])
+
+    def test_edit_rejects_a_custom_background_whose_file_disappeared(self) -> None:
+        uploaded, result = self._result()
+        background = self._upload_image(self.client, (38, 170, 92))
+        record = application._load_image_record(background["image_id"])
+        self.assertIsNotNone(record)
+        record.path.unlink()
+        response = self.client.post(
+            "/api/edits",
+            json={
+                "image_id": uploaded["image_id"],
+                "result_id": result["result_id"],
+                "background": {
+                    "mode": "image",
+                    "image_id": background["image_id"],
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+
     def test_edit_rejects_subject_opacity_with_original_background(self) -> None:
         uploaded, result = self._result()
         response = self.client.post(
@@ -172,7 +291,7 @@ class EditApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("降低主体透明度时，请先选择透明、纯色或虚化背景。", response.get_json()["error"])
+        self.assertIn("降低主体透明度时，请先选择透明、纯色、虚化或图片背景。", response.get_json()["error"])
 
     def test_tight_crop_keeps_the_visible_feather_tail(self) -> None:
         uploaded, result = self._result()

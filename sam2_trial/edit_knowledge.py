@@ -155,32 +155,123 @@ def _normalise(text: str) -> str:
     )
 
 
+_BACKGROUND_COLOUR_TERM = (
+    r"(?:白色?|黑色?|红色?|蓝色?|绿色?|灰色?|黄色?|"
+    r"white|black|red|blue|green|gr[ae]y|yellow)"
+)
+
+
+def _has_background_colour_correction(query: str) -> bool:
+    """Recognise a new colour that follows an explicitly rejected one."""
+    rejected_patterns = (
+        rf"(?:不要|别|不想要|不需要|不用|不能是|别用){_BACKGROUND_COLOUR_TERM}(?:背景|底色|底)",
+        rf"(?:不要|别|不想要|不需要|不用)(?:把|让)(?:这个|那个)?(?:背景|底色|底)(?:弄|做|变|改|换|设|设置)?(?:成|为)?{_BACKGROUND_COLOUR_TERM}",
+        rf"(?:背景|底色|底)(?:不要|别|不想要|不需要|不用|不能是|别用){_BACKGROUND_COLOUR_TERM}",
+        rf"(?:donotuse|dontuse|not|no|without)(?:a|an|the)?{_BACKGROUND_COLOUR_TERM}(?:background|backdrop)",
+        rf"(?:donot|dont|never)(?:make|let)(?:the)?(?:background|backdrop)(?:look|be|become)?{_BACKGROUND_COLOUR_TERM}",
+        rf"(?:background|backdrop)(?:shouldnotbe|shouldntbe|isnot|isnt|not){_BACKGROUND_COLOUR_TERM}",
+    )
+    correction_pattern = re.compile(
+        rf"(?:改成|换成|变成|设为|改为|换为){_BACKGROUND_COLOUR_TERM}|"
+        rf"(?:changeitto|makeit|setitto|use){_BACKGROUND_COLOUR_TERM}"
+    )
+    rejected_ends = [
+        match.end()
+        for pattern in rejected_patterns
+        for match in re.finditer(pattern, query)
+    ]
+    return bool(
+        rejected_ends
+        and any(match.start() >= min(rejected_ends) for match in correction_pattern.finditer(query))
+    )
+
+
 def _operation_is_explicitly_negated(query: str, card_id: str) -> bool:
     """Keep narrow execution gates from treating a negation as permission."""
-    if card_id != "effect.shadow":
+    colour = _BACKGROUND_COLOUR_TERM
+    if card_id == "background.color":
+        # A later affirmative correction wins over the earlier rejected
+        # colour: "背景不要白色，改成蓝色" still needs the colour card.
+        if _has_background_colour_correction(query):
+            return False
+        return bool(
+            re.search(
+                rf"(?:不要|别|不想要|不需要|不用|不能是|别用){colour}(?:背景|底色|底)?|"
+                rf"(?:不要|别|不想要|不需要|不用)(?:把|让)(?:这个|那个)?(?:背景|底色|底)(?:弄|做|变|改|换|设|设置)?(?:成|为)?{colour}|"
+                rf"(?:背景|底色|底)(?:不要|别|不想要|不需要|不用|不能是|别用){colour}|"
+                rf"(?:donotuse|dontuse|not|no|without)(?:a|an|the)?{colour}(?:background|backdrop)|"
+                rf"(?:donot|dont|never)(?:make|let)(?:the)?(?:background|backdrop)(?:look|be|become)?{colour}|"
+                rf"(?:background|backdrop)(?:shouldnotbe|shouldntbe|isnot|isnt|not){colour}",
+                query,
+            )
+        )
+    if card_id == "background.blur":
+        if re.search(
+            r"(?:改成|换成|变成|还是|然后)(?:背景|周围|后面|后景)?(?:虚化|模糊)|"
+            r"(?:then|instead)(?:blur|defocus)(?:the)?(?:background|backdrop)",
+            query,
+        ):
+            return False
+        return bool(
+            re.search(
+                r"(?:不要|别|不需要|无需|不用|取消|关闭|停止)(?:再)?(?:把|让)?(?:这个|那个)?(?:背景|周围|后面|后景)?(?:弄|做|变|调|处理)?(?:成)?(?:虚化|模糊|虚|糊)|"
+                r"(?:背景|周围|后面|后景)(?:不要|别|不需要|无需|不用|不能)(?:再)?(?:虚化|模糊|虚|糊)|"
+                r"(?:donot|dont|no|without|disable|stop)(?:blur|blurring|defocus)(?:the)?(?:background|backdrop)|"
+                r"(?:donot|dont|never)(?:make|let)(?:the)?(?:background|backdrop)(?:look|be|become)?(?:blurred|blurry|blurring|defocused)|"
+                r"(?:background|backdrop)(?:shouldnotbe|shouldntbe|isnot|isnt|not)(?:blurred|blurry|defocused)",
+                query,
+            )
+        )
+    phrases_by_card = {
+        "effect.shadow": (
+            "不要阴影",
+            "不要投影",
+            "不加阴影",
+            "别加阴影",
+            "不需要阴影",
+            "去掉阴影",
+            "去除阴影",
+            "移除阴影",
+            "取消阴影",
+            "关闭阴影",
+            "无阴影",
+            "没有阴影",
+            "不要悬浮感",
+            "不要立体感",
+            "no shadow",
+            "without shadow",
+            "remove shadow",
+            "disable shadow",
+            "do not add shadow",
+            "don't add shadow",
+        ),
+        # Transparent-background aliases are also used as a deterministic
+        # execution signal.  A negated mention therefore must not open that
+        # gate (for example, "不要抠图，保留原背景").
+        "background.transparent": (
+            "不要抠图",
+            "别抠图",
+            "不需要抠图",
+            "不要去背",
+            "别去背",
+            "不需要去背",
+            "不要去背景",
+            "别去背景",
+            "不要透明背景",
+            "背景不要透明",
+            "不要透明底",
+            "不是抠图",
+            "不用抠图",
+            "do not remove the background",
+            "don't remove the background",
+            "keep the background",
+            "no transparent background",
+            "without a transparent background",
+        ),
+    }
+    phrases = phrases_by_card.get(card_id)
+    if phrases is None:
         return False
-    phrases = (
-        "不要阴影",
-        "不要投影",
-        "不加阴影",
-        "别加阴影",
-        "不需要阴影",
-        "去掉阴影",
-        "去除阴影",
-        "移除阴影",
-        "取消阴影",
-        "关闭阴影",
-        "无阴影",
-        "没有阴影",
-        "不要悬浮感",
-        "不要立体感",
-        "no shadow",
-        "without shadow",
-        "remove shadow",
-        "disable shadow",
-        "do not add shadow",
-        "don't add shadow",
-    )
     return any(_normalise(phrase) in query for phrase in phrases)
 
 
@@ -277,6 +368,12 @@ def retrieve_editing_knowledge(
     ranked: list[tuple[int, int, CapabilityCard]] = []
     for index, card in enumerate(catalog.operations):
         matches = [alias for alias in card.aliases if _normalise(alias) in query]
+        if (
+            not matches
+            and card.card_id == "background.color"
+            and _has_background_colour_correction(query)
+        ):
+            matches = ["background colour correction"]
         if matches and _operation_is_explicitly_negated(query, card.card_id):
             matches = []
         if matches:

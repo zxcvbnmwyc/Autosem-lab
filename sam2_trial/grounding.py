@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -162,6 +163,380 @@ def _default_effect_settings() -> dict[str, int | str]:
 
 def _default_crop_settings() -> dict[str, int | bool | str]:
     return {"enabled": False, "padding_px": 24, "aspect_ratio": "free"}
+
+
+_TARGET_PRONOUN_RE = re.compile(
+    r"(?:这个|那个)(?!背景|底色|图片|图像|照片|画面)|"
+    r"(?:该主体|该物体|这个东西|那个东西)|"
+    r"(?<!其)[它他她](?:们)?|"
+    r"\b(?:this|that|it|this one|that one|them)\b",
+    re.IGNORECASE,
+)
+_EFFECT_INTENT_RE = re.compile(
+    r"背景|周围|后景|底色|白底|透明|虚化|柔焦|模糊|"
+    r"提亮|变亮|亮一点|压暗|变暗|暗一点|饱和|色调|色温|"
+    r"对比度|清晰|清楚|锐化|透明度|描边|阴影|投影|悬浮|立体|"
+    r"裁剪|裁切|裁成|好看|漂亮|美化|质感|更醒目|更突出|"
+    r"换成|替换|删掉|删除|移除|去掉|去除|补全|扩图|超分|"
+    r"修复|美颜|风格化|加文字|添加文字|移动|旋转|缩放|放大|缩小|"
+    r"transparent|background|blur|bright(?:en|er)?|darken|saturat|contrast|sharpen|"
+    r"outline|shadow|crop|replace|delete|remove|inpaint|upscale|rotate|resize|beautif",
+    re.IGNORECASE,
+)
+_EFFECT_ONLY_RE = re.compile(
+    r"^(?:请|帮我|请帮我|麻烦)?(?:把|将|让)?"
+    r"(?:(?:这张|那张|当前|原)?(?:图片|图像|照片|画面|全图|整体)?的?)?"
+    r"(?:背景|周围|后面|后景|底色).+$|"
+    r"^(?:请|帮我|请帮我|麻烦)?(?:再)?(?:弄|变|调|做|处理|修)?(?:得)?"
+    r"(?:更)?(?:好看|漂亮|清楚|清晰|醒目|突出|自然|亮|暗)(?:一点|点|些|下|一下)?$|"
+    r"^(?:请|帮我|请帮我|麻烦)?(?:再)?(?:换|改|变|设置|设)?(?:个|一个|成|为)?"
+    r"(?:白底|黑底|红底|蓝底|透明背景|透明底|纯色背景)$|"
+    r"^(?:请|帮我|请帮我|麻烦)?(?:提亮|调亮|变亮|压暗|调暗|变暗|锐化|"
+    r"柔焦|虚化|提高对比度|降低对比度|加阴影|加投影|加描边|抠图|去背|"
+    r"裁成(?:1:1|4:5|16:9|正方形))(?:一点|点|些|下|一下)?$|"
+    r"^(?:please\s+)?(?:make\s+it\s+)?(?:prettier|better|clearer|brighter|darker)$|"
+    r"^(?:请)?(?:不要|别|不需要|不用|无需)(?:把)?(?:背景|周围|后面|后景|底色)?"
+    r"(?:弄|做|变|设|设置|用)?(?:成|为)?(?:虚化|模糊|虚|糊|白底|黑底|红底|蓝底|绿底|灰底|黄底|白色背景|纯色背景)$|"
+    r"^(?:please\s+)?(?:do\s+not|don't|dont|never)\s+(?:blur|defocus|use\s+(?:a\s+)?(?:white|black|red|blue|green|gr[ae]y|yellow))\s+(?:the\s+)?(?:background|backdrop)$|"
+    r"^(?:please\s+)?(?:remove|blur|change|replace)\s+(?:the\s+)?background.*$",
+    re.IGNORECASE,
+)
+_UNSUPPORTED_SIMPLE_MARKERS = (
+    "补全",
+    "补图",
+    "扩图",
+    "超分",
+    "无损放大",
+    "修复",
+    "美颜",
+    "磨皮",
+    "风格化",
+    "加文字",
+    "添加文字",
+    "加字",
+    "拼图",
+    "移动",
+    "移到",
+    "挪到",
+    "旋转",
+    "缩放",
+    "upscale",
+    "inpaint",
+    "outpaint",
+)
+_GENERIC_PRONOUN_TARGET = "用户指代的图中主要可见物体"
+_BACKGROUND_COLOR_VALUES = {
+    "白": "#ffffff",
+    "白色": "#ffffff",
+    "white": "#ffffff",
+    "黑": "#000000",
+    "黑色": "#000000",
+    "black": "#000000",
+    "红": "#ff0000",
+    "红色": "#ff0000",
+    "red": "#ff0000",
+    "蓝": "#0000ff",
+    "蓝色": "#0000ff",
+    "blue": "#0000ff",
+    "绿": "#008000",
+    "绿色": "#008000",
+    "green": "#008000",
+    "灰": "#808080",
+    "灰色": "#808080",
+    "gray": "#808080",
+    "grey": "#808080",
+    "黄": "#ffff00",
+    "黄色": "#ffff00",
+    "yellow": "#ffff00",
+}
+_BACKGROUND_COLOR_TOKEN = (
+    r"白色?|黑色?|红色?|蓝色?|绿色?|灰色?|黄色?|"
+    r"white|black|red|blue|green|gr[ae]y|yellow"
+)
+
+
+def _normalise_instruction_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"\s+", "", text.strip())
+
+
+def _has_target_pronoun(instruction: str) -> bool:
+    text = unicodedata.normalize("NFKC", instruction).casefold()
+    return _TARGET_PRONOUN_RE.search(text) is not None
+
+
+def _semantic_compact(value: str) -> str:
+    normalised = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(
+        char
+        for char in normalised
+        if not char.isspace() and unicodedata.category(char)[0] not in {"P", "Z"}
+    )
+
+
+def _background_color_directive(
+    instruction: str,
+) -> tuple[str | None, str | None, bool]:
+    """Resolve the last explicit background-colour intent.
+
+    Positive candidates store the colour-token span rather than the whole
+    clause, allowing a correction such as "不要白色，改成蓝色" to
+    supersede only the rejected white token.
+    """
+    compact = _semantic_compact(instruction)
+    negative_patterns = (
+        rf"(?:不要|别|不想要|不需要|不用|不能是|别用)(?:用|要|成|为)?(?:一个)?(?P<color>{_BACKGROUND_COLOR_TOKEN})(?:的)?(?:背景|底色|底)?",
+        rf"(?:不要|别|不想要|不需要|不用)(?:把|让)(?:这个|那个)?(?:背景|底色|底)(?:弄|做|变|改|换|设|设置)?(?:成|为)?(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+        rf"(?:背景|底色|底).{{0,6}}?(?:不要|别|不想要|不需要|不用|不能是|别用)(?:是|用|成|为)?(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+        rf"(?:donotuse|dontuse|not|no|without)(?:a|an|the)?(?P<color>{_BACKGROUND_COLOR_TOKEN})(?:background|backdrop)",
+        rf"(?:donot|dont|never)(?:make|let)(?:the)?(?:background|backdrop)(?:look|be|become)?(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+        rf"(?:background|backdrop).{{0,12}}?(?:shouldnotbe|shouldntbe|isnot|isnt|not)(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+    )
+    negative_spans: list[tuple[int, int]] = []
+    for pattern in negative_patterns:
+        negative_spans.extend(
+            (match.start(), match.end())
+            for match in re.finditer(pattern, compact, re.IGNORECASE)
+        )
+    negative_spans.extend(
+        (match.start(), match.end())
+        for match in re.finditer(
+            r"(?:不要|别|不用|不需要)(?:干净|纯色)(?:背景|底色|底)|"
+            r"(?:donotuse|dontuse|no|without)(?:a|an|the)?(?:clean|plain|solid)(?:color)?(?:background|backdrop)",
+            compact,
+            re.IGNORECASE,
+        )
+    )
+
+    candidates: list[tuple[int, int, str]] = []
+    contextual_patterns = (
+        rf"(?:背景|底色|底)(?:弄|变|换|改|设置|设|调|用)?(?:成|为)?(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+        rf"(?P<color>{_BACKGROUND_COLOR_TOKEN})(?:的)?(?:背景|底色|底)",
+        rf"(?:the)?(?:background|backdrop)(?:color)?(?:to|as|in|is|with|=)?(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+        rf"(?P<color>{_BACKGROUND_COLOR_TOKEN})(?:solid)?(?:background|backdrop)",
+    )
+    for pattern in contextual_patterns:
+        for match in re.finditer(pattern, compact, re.IGNORECASE):
+            start, end = match.span("color")
+            if any(left <= start and end <= right for left, right in negative_spans):
+                continue
+            colour = _BACKGROUND_COLOR_VALUES.get(match.group("color").casefold())
+            if colour:
+                candidates.append((start, end, colour))
+
+    correction_patterns = (
+        rf"(?:改成|换成|变成|设成|改为|换为|变为|设为|用)(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+        rf"(?:changeitto|makeit|setitto|use)(?P<color>{_BACKGROUND_COLOR_TOKEN})",
+    )
+    background_positions = [
+        position
+        for word in ("背景", "底色", "background", "backdrop")
+        for position in [compact.rfind(word)]
+        if position >= 0
+    ]
+    for pattern in correction_patterns:
+        for match in re.finditer(pattern, compact, re.IGNORECASE):
+            start, end = match.span("color")
+            if not any(0 <= start - position <= 80 for position in background_positions):
+                continue
+            colour = _BACKGROUND_COLOR_VALUES.get(match.group("color").casefold())
+            if colour:
+                candidates.append((start, end, colour))
+
+    clean_pattern = re.compile(
+        r"干净(?:一点|点|些)?的?(?:背景|底色|底)|"
+        r"(?:背景|底色|底).{0,5}?(?:干净|纯色)|"
+        r"纯色(?:背景|底色|底)|"
+        r"(?:clean|plain|solid)(?:color)?(?:background|backdrop)|"
+        r"(?:background|backdrop).{0,10}?(?:clean|plain|solid)(?:color)?",
+        re.IGNORECASE,
+    )
+    for match in clean_pattern.finditer(compact):
+        if any(left <= match.start() and match.end() <= right for left, right in negative_spans):
+            continue
+        candidates.append((match.start(), match.end(), "#ffffff"))
+
+    if candidates:
+        start, _end, colour = max(candidates, key=lambda item: item[0])
+        if not negative_spans or start >= max(right for _left, right in negative_spans):
+            return "enable", colour, bool(negative_spans)
+    if negative_spans:
+        return "disable", None, False
+    return None, None, False
+
+
+def _background_blur_directive(instruction: str) -> str | None:
+    """Resolve background blur with explicit negation and last-intent wins."""
+    compact = _semantic_compact(instruction)
+    negative_patterns = (
+        r"(?:不要|别|不需要|无需|不用|取消|关闭|停止)(?:再)?(?:把|让)?(?:这个|那个)?(?:背景|周围|后面|后景)?(?:弄|做|变|调|处理)?(?:成)?(?:虚化|模糊|虚|糊)|"
+        r"(?:背景|周围|后面|后景).{0,6}?(?:不要|别|不需要|无需|不用|不能|别再)(?:再)?(?:虚化|模糊|虚|糊)|"
+        r"(?:donot|dont|no|without|disable|stop)(?:blur|blurring|defocus)(?:the)?(?:background|backdrop)|"
+        r"(?:donot|dont|never)(?:make|let)(?:the)?(?:background|backdrop)(?:look|be|become)?(?:blurred|blurry|blurring|defocused)|"
+        r"(?:background|backdrop).{0,16}?(?:shouldnotbe|shouldntbe|isnot|isnt|not)(?:blurred|blurry|defocused)",
+    )
+    negative_spans = [
+        (match.start(), match.end())
+        for pattern in negative_patterns
+        for match in re.finditer(pattern, compact, re.IGNORECASE)
+    ]
+    positive_patterns = (
+        r"(?:背景|周围|后面|后景).{0,8}?(?P<effect>虚化|虚一点|虚点|模糊|糊一点|糊点|朦胧)",
+        r"(?P<effect>虚化|模糊).{0,4}?(?:背景|周围|后面|后景)",
+        r"(?P<effect>blur|blurred|blurring|defocus|defocused)(?:the)?(?:background|backdrop)",
+        r"(?:background|backdrop).{0,12}?(?P<effect>blur|blurred|blurry|blurring|defocus|defocused)",
+    )
+    positive_spans: list[tuple[int, int]] = []
+    for pattern in positive_patterns:
+        for match in re.finditer(pattern, compact, re.IGNORECASE):
+            start, end = match.span("effect")
+            if any(left <= start and end <= right for left, right in negative_spans):
+                continue
+            positive_spans.append((start, end))
+    if positive_spans:
+        start, _end = max(positive_spans, key=lambda item: item[0])
+        if not negative_spans or start >= max(right for _left, right in negative_spans):
+            return "enable"
+    if negative_spans:
+        return "disable"
+    return None
+
+
+def _has_unsupported_intent(instruction: str) -> bool:
+    """Recognise only clear operations outside the local compositor."""
+    text = _normalise_instruction_text(instruction)
+    if any(marker in text for marker in _UNSUPPORTED_SIMPLE_MARKERS):
+        return True
+    # Object deletion needs generative inpainting; removing the background is
+    # the supported transparent-background operation and is deliberately
+    # excluded here.
+    for match in re.finditer(r"(?:删掉|删除|移除|去掉|去除)([^,，。;；并]+)", text):
+        removed = match.group(1)
+        if not any(word in removed for word in ("背景", "底色", "背景色")):
+            return True
+    # Replacing a foreground object is unsupported; replacing only the
+    # background or its colour remains a normal local edit.
+    for match in re.finditer(
+        r"(?:把|将)?(.+?)(?:替换成|替换为|换成|换为|变成|变为)([^,，。;；并]+)",
+        text,
+    ):
+        replaced, replacement = match.groups()
+        replacement_is_background = bool(
+            re.search(
+                r"背景|底色|(?:白|黑|红|蓝|绿|灰|黄|透明|纯色)底",
+                replacement,
+            )
+        )
+        if (
+            replaced
+            and not any(word in replaced for word in ("背景", "底色", "背景色"))
+            and not replacement_is_background
+        ):
+            return True
+    return bool(
+        re.search(
+            r"\breplace\b(?!\s+(?:the\s+)?(?:background|backdrop))|"
+            r"\bdelete\b|\bremove\b(?!\s+(?:the\s+)?(?:background|backdrop))",
+            unicodedata.normalize("NFKC", instruction).casefold(),
+        )
+    )
+
+
+def _clean_target_hint(value: str) -> str | None:
+    target = value.strip(" \t\r\n,，。;；:：")
+    target = re.sub(r"^(?:请|请帮我|帮我|麻烦|就|只|把|将)+", "", target)
+    target = re.sub(r"(?:就好|即可|一下)$", "", target)
+    target = target.strip(" \t\r\n,，。;；:：")
+    compact = _normalise_instruction_text(target)
+    if not compact or len(target) > 500:
+        return None
+    non_targets = {
+        "背景",
+        "这个背景",
+        "那个背景",
+        "底色",
+        "图片",
+        "图像",
+        "照片",
+        "画面",
+        "整体",
+        "全图",
+        "background",
+        "image",
+        "photo",
+        "弄",
+        "弄得",
+        "变",
+        "变得",
+        "调",
+        "调得",
+        "做",
+        "做得",
+        "处理",
+        "处理得",
+        "再",
+        "更",
+    }
+    if compact in non_targets or compact.endswith(("背景", "底色")):
+        return None
+    if _has_target_pronoun(target):
+        return _GENERIC_PRONOUN_TARGET
+    return target
+
+
+def _instruction_is_target_only(
+    instruction: str, retrieval: CapabilityRetrieval
+) -> bool:
+    if retrieval.matched_operation_ids or _has_unsupported_intent(instruction):
+        return False
+    return _EFFECT_INTENT_RE.search(instruction) is None
+
+
+def _textual_target_hint(
+    instruction: str, *, allow_plain_target: bool
+) -> str | None:
+    """Extract a conservative fallback target when Qwen omits one.
+
+    Qwen's image-grounded description remains preferable.  This helper exists
+    so deterministic surface forms such as a bare noun, a demonstrative, or an
+    unsupported object action do not become a false missing-subject error.
+    """
+    text = unicodedata.normalize("NFKC", instruction).strip()
+    if _has_target_pronoun(text):
+        return _GENERIC_PRONOUN_TARGET
+
+    patterns = (
+        r"(?:把|将)\s*(.+?)\s*(?:抠出来|扣出来|抠出|扣出|分割|提取|选中|选出|弄出来|单独拿出来|删掉|删除|移除|去掉|去除|替换成|替换为|换成|换为|变成|变为|移动|移到|挪到|旋转|放大|缩小|裁剪|裁切|调整)",
+        r"(?:保留|留下|选中|选择|识别|定位|分割|提取|抠出|扣出|删掉|删除|移除)\s*(.+?)(?=[,，。;；]|并|然后|再|$)",
+        r"(?:让|给)\s*(.+?)\s*(?:再|更|变|调|加|做|弄|换|看起来|背景|周围|后面|后景|虚化|模糊)",
+        r"^(.+?)(?:的)?(?:背景|周围|后面|后景)(?:变|换|改|设|透明|虚化|模糊)",
+        r"^(.+?)(?:再亮一点|再暗一点|更亮|亮一点|更暗|暗一点|更鲜艳|更清楚|更清晰|好看一点|换个(?:白|黑|红|蓝|绿|灰|黄)底|裁成)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            target = _clean_target_hint(match.group(1))
+            if target:
+                return target
+
+    clauses = re.split(r"[,，;；]", text, maxsplit=1)
+    if len(clauses) == 2 and _EFFECT_INTENT_RE.search(clauses[1]):
+        target = _clean_target_hint(clauses[0])
+        if target:
+            return target
+    if allow_plain_target and len(text) <= 120:
+        selector_stripped = re.sub(
+            r"^(?:请|请帮我|帮我|麻烦)?(?:把|将)?(?:保留|留下|选中|选择|识别|定位|分割|提取)?",
+            "",
+            text,
+        )
+        selector_stripped = re.sub(
+            r"(?:选出来|选出|选中|识别出来|定位出来|分割出来|提取出来|弄出来|单独拿出来|就好|即可|一下)$",
+            "",
+            selector_stripped,
+        )
+        return _clean_target_hint(selector_stripped)
+    return None
 
 
 class GroundingError(RuntimeError):
@@ -802,6 +1177,279 @@ def _constrain_plan_to_retrieved_capabilities(
     )
 
 
+def _plan_has_visible_effect(plan: OneClickEditPlan) -> bool:
+    """Return whether a validated plan would visibly alter image pixels."""
+    settings = plan.as_edit_settings()
+    return bool(
+        settings["background_mode"] != "original"
+        or settings["background_brightness"]
+        or settings["background_saturation"]
+        or settings["background_grayscale"]
+        or settings["subject_brightness"]
+        or settings["subject_saturation"]
+        or settings["subject_contrast"]
+        or settings["subject_hue_degrees"]
+        or settings["subject_temperature"]
+        or settings["subject_blur_px"]
+        or settings["subject_sharpen"]
+        or settings["subject_opacity"] != 100
+        or settings["outline_width_px"]
+        or settings["shadow_opacity"]
+        or settings["crop_enabled"]
+    )
+
+
+def _safe_plan_copy(
+    plan: OneClickEditPlan,
+    *,
+    status: str,
+    target: str | None,
+    reason_code: str,
+    summary: str | None = None,
+    use_model_settings: bool,
+) -> OneClickEditPlan:
+    if use_model_settings:
+        selection = {**_default_selection_settings(), **dict(plan.selection)}
+        background = {**_default_background_settings(), **dict(plan.background)}
+        subject = {**_default_subject_settings(), **dict(plan.subject)}
+        effects = {**_default_effect_settings(), **dict(plan.effects)}
+        crop = {**_default_crop_settings(), **dict(plan.crop)}
+    else:
+        selection = _default_selection_settings()
+        background = _default_background_settings()
+        subject = _default_subject_settings()
+        effects = _default_effect_settings()
+        crop = _default_crop_settings()
+    return OneClickEditPlan(
+        status=status,
+        target=target,
+        selection=selection,
+        background=background,
+        subject=subject,
+        effects=effects,
+        crop=crop,
+        summary=summary or plan.summary,
+        reason_code=reason_code,
+    )
+
+
+def _missing_subject_plan(plan: OneClickEditPlan) -> OneClickEditPlan:
+    return _safe_plan_copy(
+        plan,
+        status="needs_input",
+        target=None,
+        reason_code="missing_subject",
+        summary="没有从用户文字中识别到要处理的主体。",
+        use_model_settings=False,
+    )
+
+
+def normalise_one_click_plan_for_instruction(
+    plan: OneClickEditPlan,
+    instruction: str,
+    retrieval: CapabilityRetrieval | None = None,
+) -> OneClickEditPlan:
+    """Apply deterministic subject-first semantics after Qwen planning.
+
+    The visual model is still responsible for understanding the image and for
+    rewriting a useful target description.  This small policy layer owns the
+    outcomes that must not vary with wording or model sampling:
+
+    * a bare subject is selection-only;
+    * an explicit cut-out/remove-background request is transparent;
+    * a demonstrative may fall back to the main visible object and ambiguity is
+      left for the grounding stage to expose as candidates;
+    * an effect-only request never licenses an inferred subject;
+    * unsupported generative clauses are omitted without discarding an
+      independently supported local effect.
+    """
+    if not isinstance(instruction, str) or not instruction.strip():
+        return _missing_subject_plan(plan)
+    retrieved = retrieval or retrieve_editing_knowledge(instruction)
+    matched_ids = frozenset(retrieved.matched_operation_ids)
+    target_only = _instruction_is_target_only(instruction, retrieved)
+    target_hint = _textual_target_hint(
+        instruction, allow_plain_target=target_only
+    )
+    has_pronoun = _has_target_pronoun(instruction)
+    is_effect_only = bool(_EFFECT_ONLY_RE.search(instruction.strip())) and not (
+        target_hint or has_pronoun
+    )
+    if is_effect_only:
+        return _missing_subject_plan(plan)
+
+    target = plan.target or target_hint
+    if not target:
+        return _missing_subject_plan(plan)
+
+    force_transparent = "background.transparent" in matched_ids
+    force_original = "background.original" in matched_ids
+    (
+        color_directive,
+        fallback_background_color,
+        color_correction_overrides_model,
+    ) = _background_color_directive(instruction)
+    blur_directive = _background_blur_directive(instruction)
+    suppress_color = color_directive == "disable"
+    suppress_blur = blur_directive == "disable"
+    force_color = bool(
+        not suppress_color
+        and ("background.color" in matched_ids or color_directive == "enable")
+    )
+    force_blur = bool(
+        not suppress_blur
+        and ("background.blur" in matched_ids or blur_directive == "enable")
+    )
+    model_has_color = bool(
+        plan.status == "ready" and plan.background.get("mode") == "color"
+    )
+    model_has_blur = bool(
+        plan.status == "ready" and plan.background.get("mode") == "blur"
+    )
+    requested_background_modes: set[str] = set()
+    if force_original:
+        requested_background_modes.add("background.original")
+    if force_transparent:
+        requested_background_modes.add("background.transparent")
+    if force_color:
+        requested_background_modes.add("background.color")
+    if force_blur:
+        requested_background_modes.add("background.blur")
+    if len(requested_background_modes) > 1:
+        return _safe_plan_copy(
+            plan,
+            status="needs_input",
+            target=target,
+            reason_code="conflicting_effects",
+            summary="同时识别到多种背景处理方式，需要先确认一种。",
+            use_model_settings=False,
+        )
+    if force_color and not model_has_color and fallback_background_color is None:
+        return _safe_plan_copy(
+            plan,
+            status="needs_input",
+            target=target,
+            reason_code="missing_color",
+            summary="请说明想要的背景颜色。",
+            use_model_settings=False,
+        )
+
+    unsupported_intent = plan.status == "unsupported" or _has_unsupported_intent(
+        instruction
+    )
+    can_recover_non_ready = bool(
+        target_only
+        or force_transparent
+        or force_original
+        or force_color
+        or force_blur
+        or suppress_color
+        or suppress_blur
+        or unsupported_intent
+        or plan.reason_code in {"ambiguous_subject", "missing_effect"}
+    )
+    if plan.status == "needs_input" and not can_recover_non_ready:
+        # Missing colours, conflicting effects and manual-only requests are
+        # meaningful questions. A target alone must not erase them.
+        return plan
+
+    use_model_settings = bool(
+        plan.status == "ready"
+        and not target_only
+        # When the request is only an unsupported generative action, retain no
+        # model-invented local effect. A separately matched local operation may
+        # still be preserved below.
+        and not (unsupported_intent and not matched_ids)
+    )
+    executable = _safe_plan_copy(
+        plan,
+        status="ready",
+        target=target,
+        reason_code="none",
+        use_model_settings=use_model_settings,
+    )
+
+    if force_transparent:
+        executable.background.update(
+            {
+                "mode": "transparent",
+                "color": "#ffffff",
+                "blur_px": 0,
+                "brightness": 0,
+                "saturation": 0,
+                "grayscale": False,
+            }
+        )
+    elif force_original:
+        executable.background.update(
+            {
+                "mode": "original",
+                "color": "#ffffff",
+                "blur_px": 0,
+                "brightness": 0,
+                "saturation": 0,
+                "grayscale": False,
+            }
+        )
+    elif force_color:
+        if not model_has_color or color_correction_overrides_model:
+            executable.background.update(
+                {
+                    "mode": "color",
+                    "color": fallback_background_color or "#ffffff",
+                    "blur_px": 0,
+                    "brightness": 0,
+                    "saturation": 0,
+                    "grayscale": False,
+                }
+            )
+    elif force_blur:
+        if not model_has_blur:
+            executable.background.update(
+                {
+                    "mode": "blur",
+                    "color": "#ffffff",
+                    "blur_px": 18,
+                    "brightness": 0,
+                    "saturation": 0,
+                    "grayscale": False,
+                }
+            )
+    elif (
+        suppress_blur and executable.background.get("mode") == "blur"
+    ) or (
+        suppress_color and executable.background.get("mode") == "color"
+    ):
+        executable.background.update(
+            {
+                "mode": "original",
+                "color": "#ffffff",
+                "blur_px": 0,
+                "brightness": 0,
+                "saturation": 0,
+                "grayscale": False,
+            }
+        )
+
+    if unsupported_intent:
+        reason_code = "unsupported_effect_omitted"
+    elif _plan_has_visible_effect(executable):
+        reason_code = "none"
+    else:
+        reason_code = "selection_only"
+    return OneClickEditPlan(
+        status="ready",
+        target=executable.target,
+        selection=dict(executable.selection),
+        background=dict(executable.background),
+        subject=dict(executable.subject),
+        effects=dict(executable.effects),
+        crop=dict(executable.crop),
+        summary=executable.summary,
+        reason_code=reason_code,
+    )
+
+
 def _strip_code_fence(content: str) -> str:
     value = content.strip()
     fence = chr(96) * 3
@@ -955,8 +1603,11 @@ def _one_click_edit_request(
         "例如“更突出/更醒目/聚焦商品”可映射为背景虚化 18、主体亮度 +8；"
         "“更清楚/更有质感”可保守映射为主体锐化 8、对比度 +6；"
         "“有悬浮感/立体一点”可映射为垂直阴影 8、模糊 12、不透明度 35。"
+        "“抠图/抠出来/去背/去除背景/透明背景”是明确的透明背景要求；"
+        "如果没有这些明确表达，不要自行把背景改成透明。"
         "只有用户明确要求阴影、投影、悬浮感、立体效果、shadow 或 3D effect 时才可设置 shadow；"
-        "“弄出来”“抠出来”“提取出来”“单独拿出来”只表示识别、分割或导出主体，绝不表示阴影、悬浮或立体。"
+        "“弄出来”“提取出来”“单独拿出来”在没有其他效果时只生成选区；"
+        "它们和“抠出来”都绝不表示阴影、悬浮或立体。"
         "不要为纯主体输入凭空添加这些效果。按最直接的含义选择设置，并把明确颜色转换为 #RRGGBB。 "
         "例如“保留奶酪，背景变白”是明确可执行的请求：使用 "
         "background.mode=color、color=#ffffff、blur_px=0。 "
@@ -1218,6 +1869,9 @@ class QwenEditPlanner(QwenGrounder):
             )
             plan = _constrain_plan_to_retrieved_capabilities(
                 parse_one_click_edit_plan(model_payload), retrieval
+            )
+            plan = normalise_one_click_plan_for_instruction(
+                plan, instruction, retrieval
             )
         except (TypeError, json.JSONDecodeError, GroundingError) as error:
             raise GroundingSchemaError("百炼返回的数据无法解析为一键编辑计划。") from error

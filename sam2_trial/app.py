@@ -8,6 +8,7 @@ worker so CPU inference never blocks the website or an HTTP request.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -46,6 +47,7 @@ from grounding import (
     QwenEditPlanner,
     QwenGrounder,
     load_local_dotenv,
+    normalise_one_click_plan_for_instruction,
     parse_one_click_edit_plan,
 )
 from mask_editing import apply_mask_strokes, compose_edit, crop_to_subject, refine_mask
@@ -134,11 +136,12 @@ ONE_CLICK_MIN_GROUNDING_CONFIDENCE = 0.75
 AGENT_REVIEW_IOU = 0.70
 AGENT_MIN_MASK_AREA_RATIO = 0.001
 AGENT_MAX_MASK_AREA_RATIO = 0.92
+ONE_CLICK_QUALITY_MAX_EDGE = 1024
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 IMAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESULT_FILE_NAMES = {"mask.png", "overlay.png", "preview.jpg", "contours.png", "result.json"}
 EDIT_FILE_NAMES = {"preview.png", "edited.png", "mask.png", "edit.json"}
-EDIT_BACKGROUND_MODES = {"original", "transparent", "color", "blur"}
+EDIT_BACKGROUND_MODES = {"original", "transparent", "color", "blur", "image"}
 EDIT_CROP_ASPECT_RATIOS = {"free", "1:1", "4:5", "16:9"}
 MAX_EDIT_STROKES = 80
 MAX_EDIT_STROKE_POINTS = 500
@@ -688,6 +691,11 @@ class OneClickRun:
     job_id: str | None = None
     result_id: str | None = None
     edit: dict[str, Any] | None = None
+    quality_retry_count: int = 0
+    selection_quality: dict[str, Any] | None = None
+    quality_retry_fallback_job_id: str | None = None
+    quality_retry_fallback_result_id: str | None = None
+    quality_retry_fallback_quality: dict[str, Any] | None = None
 
     def as_storage(self) -> dict[str, Any]:
         return {
@@ -705,6 +713,11 @@ class OneClickRun:
             "job_id": self.job_id,
             "result_id": self.result_id,
             "edit": self.edit,
+            "quality_retry_count": self.quality_retry_count,
+            "selection_quality": self.selection_quality,
+            "quality_retry_fallback_job_id": self.quality_retry_fallback_job_id,
+            "quality_retry_fallback_result_id": self.quality_retry_fallback_result_id,
+            "quality_retry_fallback_quality": self.quality_retry_fallback_quality,
         }
 
     @classmethod
@@ -730,6 +743,23 @@ class OneClickRun:
                 job_id=value.get("job_id") if isinstance(value.get("job_id"), str) else None,
                 result_id=value.get("result_id") if isinstance(value.get("result_id"), str) else None,
                 edit=value.get("edit") if isinstance(value.get("edit"), dict) else None,
+                quality_retry_count=int(value.get("quality_retry_count", 0)),
+                selection_quality=value.get("selection_quality") if isinstance(value.get("selection_quality"), dict) else None,
+                quality_retry_fallback_job_id=(
+                    value.get("quality_retry_fallback_job_id")
+                    if isinstance(value.get("quality_retry_fallback_job_id"), str)
+                    else None
+                ),
+                quality_retry_fallback_result_id=(
+                    value.get("quality_retry_fallback_result_id")
+                    if isinstance(value.get("quality_retry_fallback_result_id"), str)
+                    else None
+                ),
+                quality_retry_fallback_quality=(
+                    value.get("quality_retry_fallback_quality")
+                    if isinstance(value.get("quality_retry_fallback_quality"), dict)
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError, GroundingError):
             return None
@@ -744,6 +774,15 @@ class OneClickRun:
             or (record.job_id is not None and not IMAGE_ID_RE.fullmatch(record.job_id))
             or (record.result_id is not None and not IMAGE_ID_RE.fullmatch(record.result_id))
             or (record.selected_candidate_index is not None and record.selected_candidate_index < 0)
+            or not 0 <= record.quality_retry_count <= 1
+            or (
+                record.quality_retry_fallback_job_id is not None
+                and not IMAGE_ID_RE.fullmatch(record.quality_retry_fallback_job_id)
+            )
+            or (
+                record.quality_retry_fallback_result_id is not None
+                and not IMAGE_ID_RE.fullmatch(record.quality_retry_fallback_result_id)
+            )
         ):
             return None
         return record
@@ -1009,6 +1048,7 @@ agent_runs_lock = threading.Lock()
 one_click_runs: dict[str, OneClickRun] = {}
 one_click_runs_lock = threading.Lock()
 one_click_execution_lock = threading.Lock()
+one_click_quality_retry_lock = threading.Lock()
 engine = Sam2Engine()
 grounder = QwenGrounder()
 edit_planner = QwenEditPlanner()
@@ -1299,38 +1339,476 @@ def _one_click_public(run: OneClickRun, record: ImageRecord) -> dict[str, Any]:
         "job": _one_click_job_public(run),
         "result_id": run.result_id,
         "edit": run.edit,
+        "quality_retry_count": run.quality_retry_count,
+        "selection_quality": (
+            _stable_one_click_quality(run.selection_quality)
+            if isinstance(run.selection_quality, dict)
+            else None
+        ),
     }
 
 
-def _one_click_quality_message(record: ImageRecord, job: JobRecord) -> str | None:
+def _new_one_click_quality() -> dict[str, Any]:
+    """Create the stable public shape used by every quality-check outcome."""
+    return {
+        "verdict": "needs_input",
+        "area_ratio": None,
+        "estimated_iou": None,
+        "component_count": None,
+        "largest_component_ratio": None,
+        "border_sides": [],
+        "prompt_box_containment": None,
+        "positive_points_contained": None,
+        "checks": [],
+        "retryable_codes": [],
+        "recommended_action": "manual_refine",
+        "retry_skipped_reason": None,
+        "auto_retry": {
+            "attempted": False,
+            "outcome": None,
+            "trigger_codes": [],
+        },
+    }
+
+
+def _stable_one_click_quality(value: dict[str, Any]) -> dict[str, Any]:
+    stable = _new_one_click_quality()
+    for key in stable:
+        if key != "auto_retry" and key in value:
+            stable[key] = deepcopy(value[key])
+    raw_retry = value.get("auto_retry")
+    if isinstance(raw_retry, dict):
+        for key in stable["auto_retry"]:
+            if key in raw_retry:
+                stable["auto_retry"][key] = deepcopy(raw_retry[key])
+    return stable
+
+
+def _one_click_selection_quality(record: ImageRecord, job: JobRecord) -> dict[str, Any]:
+    """Return conservative, explainable checks for one generated SAM2 mask.
+
+    These checks detect only clear mechanical failures.  They do not attempt to
+    decide whether the selected pixels are the user's semantic target.  A retry
+    is recommended only when adding Qwen's validated interior point could make
+    the existing box prompt more specific.
+    """
+
     result = job.result if isinstance(job.result, dict) else None
+    quality = _new_one_click_quality()
+    checks: list[dict[str, str]] = quality["checks"]
+    retryable_codes: list[str] = quality["retryable_codes"]
+    blocking_codes: list[str] = []
+
+    def add_check(code: str, severity: str, message: str, *, retryable: bool = False) -> None:
+        checks.append({"code": code, "severity": severity, "message": message})
+        if severity == "warning":
+            blocking_codes.append(code)
+        if retryable:
+            retryable_codes.append(code)
+
     if result is None:
-        return "没有得到可用选区。"
+        add_check("missing_result", "warning", "没有得到可用选区。")
+        return quality
+
     area = result.get("mask_area_px")
     score = result.get("estimated_iou")
-    if not isinstance(area, (int, float)) or area <= 0:
-        return "没有得到可用选区。"
-    ratio = float(area) / float(record.width * record.height)
-    if ratio < AGENT_MIN_MASK_AREA_RATIO:
-        return "选区太小，未自动处理。请改写需求或手动编辑。"
-    if ratio > AGENT_MAX_MASK_AREA_RATIO:
-        return "选区过大，未自动处理。请改写需求或手动编辑。"
-    if isinstance(score, (int, float)) and score < AGENT_REVIEW_IOU:
-        return "选区不够可靠，已保留结果供你微调。"
-    return None
+    area_ratio = (
+        float(area) / float(record.width * record.height)
+        if isinstance(area, (int, float)) and not isinstance(area, bool)
+        else None
+    )
+    if area_ratio is None or area_ratio <= 0:
+        add_check("empty_mask", "warning", "没有得到有效选区。", retryable=True)
+    elif area_ratio < AGENT_MIN_MASK_AREA_RATIO:
+        add_check("mask_too_small", "warning", "选区明显过小。", retryable=True)
+    elif area_ratio > AGENT_MAX_MASK_AREA_RATIO:
+        add_check("mask_too_large", "warning", "选区覆盖了几乎整张图片。", retryable=True)
+
+    estimated_iou = (
+        float(score)
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(float(score))
+        else None
+    )
+    if estimated_iou is not None and estimated_iou < AGENT_REVIEW_IOU:
+        # SAM2's ranking estimate is not calibrated.  Alone it is only a hint;
+        # mechanical evidence below must be present before editing is blocked.
+        add_check("low_sam2_score", "info", "SAM2 对当前边界的估计偏低，请留意边缘。")
+
+    mask: np.ndarray | None = None
+    result_id = result.get("result_id")
+    if isinstance(result_id, str) and IMAGE_ID_RE.fullmatch(result_id):
+        try:
+            mask = _load_result_mask(RESULTS_DIR / result_id, record)
+        except (OSError, ValueError):
+            add_check("mask_artifact_unavailable", "warning", "选区文件不可用，请重新处理。")
+
+    component_count = None
+    largest_component_ratio = None
+    border_sides: list[str] = []
+    prompt_box_containment = None
+    positive_points_contained = None
+    if mask is not None and bool(mask.any()):
+        analysis_mask = mask
+        largest_edge = max(mask.shape)
+        if largest_edge > ONE_CLICK_QUALITY_MAX_EDGE:
+            scale = ONE_CLICK_QUALITY_MAX_EDGE / largest_edge
+            analysis_mask = cv2.resize(
+                mask.astype(np.uint8),
+                (max(2, round(record.width * scale)), max(2, round(record.height * scale))),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+        binary = np.ascontiguousarray(analysis_mask.astype(np.uint8))
+        component_total, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        component_areas = stats[1:, cv2.CC_STAT_AREA] if component_total > 1 else np.asarray([], dtype=np.int32)
+        component_count = int(len(component_areas))
+        if component_areas.size:
+            largest_component_ratio = float(component_areas.max()) / float(component_areas.sum())
+            # This deliberately requires many components and no dominant body;
+            # separated fingers, leaves and lettering should not trip it.
+            if component_count >= 8 and largest_component_ratio < 0.55:
+                add_check("fragmented_mask", "warning", "选区包含较多彼此分离的碎片。", retryable=True)
+
+        if bool(mask[:, 0].any()):
+            border_sides.append("left")
+        if bool(mask[:, -1].any()):
+            border_sides.append("right")
+        if bool(mask[0, :].any()):
+            border_sides.append("top")
+        if bool(mask[-1, :].any()):
+            border_sides.append("bottom")
+        if len(border_sides) == 4 and area_ratio is not None and area_ratio > 0.60:
+            add_check("mask_touches_all_borders", "warning", "选区大面积触及图片四边。", retryable=True)
+
+        raw_box = job.input_payload.get("box")
+        if (
+            isinstance(raw_box, list)
+            and len(raw_box) == 4
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in raw_box)
+        ):
+            x0 = max(0, min(record.width - 1, math.floor(float(raw_box[0]))))
+            y0 = max(0, min(record.height - 1, math.floor(float(raw_box[1]))))
+            x1 = max(0, min(record.width - 1, math.ceil(float(raw_box[2]))))
+            y1 = max(0, min(record.height - 1, math.ceil(float(raw_box[3]))))
+            if x1 >= x0 and y1 >= y0:
+                prompt_box_containment = float(mask[y0 : y1 + 1, x0 : x1 + 1].sum()) / float(mask.sum())
+                if prompt_box_containment < 0.25:
+                    add_check("mask_outside_prompt_box", "warning", "选区大部分落在定位框之外。", retryable=True)
+
+        positive_points = [
+            point
+            for point in job.input_payload.get("points", [])
+            if isinstance(point, dict) and point.get("label") == 1
+        ]
+        if positive_points:
+            positive_points_contained = 0
+            for point in positive_points:
+                x = point.get("x")
+                y = point.get("y")
+                if not (
+                    isinstance(x, (int, float))
+                    and not isinstance(x, bool)
+                    and isinstance(y, (int, float))
+                    and not isinstance(y, bool)
+                ):
+                    continue
+                px = max(0, min(record.width - 1, round(float(x))))
+                py = max(0, min(record.height - 1, round(float(y))))
+                positive_points_contained += int(bool(mask[py, px]))
+            if positive_points_contained == 0:
+                add_check("positive_point_missed", "warning", "选区没有覆盖主体提示点。", retryable=True)
+
+    if not checks:
+        checks.append({"code": "quality_check_passed", "severity": "info", "message": "选区通过基础质量检查。"})
+    quality.update(
+        {
+            "verdict": "retry" if retryable_codes else ("needs_input" if blocking_codes else "pass"),
+            "area_ratio": area_ratio,
+            "estimated_iou": estimated_iou,
+            "component_count": component_count,
+            "largest_component_ratio": largest_component_ratio,
+            "border_sides": border_sides,
+            "prompt_box_containment": prompt_box_containment,
+            "positive_points_contained": positive_points_contained,
+            "recommended_action": (
+                "retry_with_point" if retryable_codes else ("manual_refine" if blocking_codes else "continue")
+            ),
+        }
+    )
+    return quality
+
+
+_ONE_CLICK_UNUSABLE_QUALITY_CODES = {
+    "missing_result",
+    "empty_mask",
+    "mask_artifact_unavailable",
+}
+_ONE_CLICK_MECHANICAL_QUALITY_CODES = {
+    "mask_too_small",
+    "mask_too_large",
+    "fragmented_mask",
+    "mask_touches_all_borders",
+    "mask_outside_prompt_box",
+    "positive_point_missed",
+}
+_ONE_CLICK_MECHANICAL_WEIGHTS = {
+    "positive_point_missed": 8,
+    "mask_outside_prompt_box": 6,
+    "mask_too_large": 5,
+    "mask_touches_all_borders": 4,
+    "mask_too_small": 4,
+    "fragmented_mask": 3,
+}
+
+
+def _one_click_quality_rank(
+    quality: dict[str, Any],
+) -> tuple[int, int, float, float, float, tuple[str, ...]]:
+    """Rank a mask conservatively; lower tuples are better.
+
+    Unusable artifacts always lose.  Remaining masks are ordered only by
+    deterministic geometric evidence: prompt violations, extreme area,
+    all-border spill and fragmentation.  SAM2's uncalibrated IoU estimate is
+    intentionally excluded.  Equal ranks keep the initial result.
+    """
+
+    codes = {
+        check.get("code")
+        for check in quality.get("checks", [])
+        if isinstance(check, dict) and isinstance(check.get("code"), str)
+    }
+    unusable = int(bool(codes & _ONE_CLICK_UNUSABLE_QUALITY_CODES))
+    mechanical_codes = codes & _ONE_CLICK_MECHANICAL_QUALITY_CODES
+    weighted_failures = sum(_ONE_CLICK_MECHANICAL_WEIGHTS[code] for code in mechanical_codes)
+
+    area_ratio = quality.get("area_ratio")
+    area_penalty = 0.0
+    if isinstance(area_ratio, (int, float)) and not isinstance(area_ratio, bool):
+        ratio = float(area_ratio)
+        if ratio < AGENT_MIN_MASK_AREA_RATIO:
+            area_penalty = (AGENT_MIN_MASK_AREA_RATIO - ratio) / AGENT_MIN_MASK_AREA_RATIO
+        elif ratio > AGENT_MAX_MASK_AREA_RATIO:
+            area_penalty = (ratio - AGENT_MAX_MASK_AREA_RATIO) / (1.0 - AGENT_MAX_MASK_AREA_RATIO)
+
+    containment = quality.get("prompt_box_containment")
+    containment_penalty = (
+        max(0.0, (0.25 - float(containment)) / 0.25)
+        if "mask_outside_prompt_box" in mechanical_codes
+        and isinstance(containment, (int, float))
+        and not isinstance(containment, bool)
+        else float("mask_outside_prompt_box" in mechanical_codes)
+    )
+    largest_component_ratio = quality.get("largest_component_ratio")
+    fragmentation_penalty = (
+        max(0.0, (0.55 - float(largest_component_ratio)) / 0.55)
+        if "fragmented_mask" in mechanical_codes
+        and isinstance(largest_component_ratio, (int, float))
+        and not isinstance(largest_component_ratio, bool)
+        else float("fragmented_mask" in mechanical_codes)
+    )
+    return (
+        unusable,
+        weighted_failures,
+        round(area_penalty, 6),
+        round(containment_penalty, 6),
+        round(fragmentation_penalty, 6),
+        tuple(sorted(mechanical_codes)),
+    )
+
+
+def _one_click_quality_after_retry(
+    quality: dict[str, Any],
+    *,
+    outcome: str,
+    trigger_codes: list[str],
+    manual_reason: str | None = None,
+) -> dict[str, Any]:
+    updated = _stable_one_click_quality(quality)
+    updated["auto_retry"] = {
+        "attempted": True,
+        "outcome": outcome,
+        "trigger_codes": list(trigger_codes),
+    }
+    if manual_reason is not None:
+        updated["verdict"] = "needs_input"
+        updated["recommended_action"] = "manual_refine"
+        updated["retry_skipped_reason"] = manual_reason
+    return updated
+
+
+def _one_click_quality_retry_skipped(quality: dict[str, Any], reason: str) -> dict[str, Any]:
+    updated = _stable_one_click_quality(quality)
+    updated["verdict"] = "needs_input"
+    updated["recommended_action"] = "manual_refine"
+    updated["retry_skipped_reason"] = reason
+    updated["auto_retry"] = {
+        "attempted": False,
+        "outcome": "skipped",
+        "trigger_codes": list(updated.get("retryable_codes", [])),
+    }
+    return updated
+
+
+def _one_click_quality_unavailable(quality: dict[str, Any], reason: str) -> dict[str, Any]:
+    updated = _stable_one_click_quality(quality)
+    updated["verdict"] = "failed"
+    updated["recommended_action"] = "rerun_segmentation"
+    updated["retry_skipped_reason"] = reason
+    return updated
+
+
+def _restore_one_click_quality_fallback(
+    run: OneClickRun,
+    record: ImageRecord,
+    *,
+    reason: str,
+    outcome: str,
+    message: str,
+) -> bool:
+    """Restore the first successful result when the one allowed retry is worse."""
+    job_id = run.quality_retry_fallback_job_id
+    result_id = run.quality_retry_fallback_result_id
+    quality = run.quality_retry_fallback_quality
+    if (
+        not isinstance(job_id, str)
+        or not IMAGE_ID_RE.fullmatch(job_id)
+        or not isinstance(result_id, str)
+        or not IMAGE_ID_RE.fullmatch(result_id)
+        or not isinstance(quality, dict)
+    ):
+        return False
+    fallback_job = job_manager.get(job_id)
+    fallback_job_result = fallback_job.result if fallback_job is not None and isinstance(fallback_job.result, dict) else None
+    if (
+        fallback_job is None
+        or fallback_job.owner_id != run.owner_id
+        or fallback_job.status != "succeeded"
+        or not isinstance(fallback_job_result, dict)
+        or fallback_job_result.get("result_id") != result_id
+    ):
+        return False
+    try:
+        _load_result_mask(RESULTS_DIR / result_id, record)
+    except (OSError, ValueError):
+        return False
+    run.job_id = job_id
+    run.result_id = result_id
+    run.selection_quality = _one_click_quality_after_retry(
+        quality,
+        outcome=outcome,
+        trigger_codes=list(quality.get("retryable_codes", [])),
+        manual_reason=reason,
+    )
+    run.phase = "needs_input"
+    run.message = message
+    return True
+
+
+def _one_click_quality_message(quality: dict[str, Any], *, retried: bool) -> str | None:
+    if quality.get("verdict") == "pass":
+        return None
+    codes = set(quality.get("retryable_codes", []))
+    if "empty_mask" in codes:
+        detail = "没有得到有效选区"
+    elif "mask_too_small" in codes:
+        detail = "选区明显过小"
+    elif "mask_too_large" in codes or "mask_touches_all_borders" in codes:
+        detail = "选区覆盖范围明显过大"
+    elif "fragmented_mask" in codes:
+        detail = "选区包含较多碎片"
+    elif "mask_outside_prompt_box" in codes or "positive_point_missed" in codes:
+        detail = "选区与主体提示位置不一致"
+    elif "low_sam2_score" in codes:
+        detail = "选区边界不够稳定"
+    else:
+        detail = "选区未通过基础检查"
+    suffix = "；已自动重试一次，请确认或手动微调。" if retried else "，请确认或手动微调。"
+    return detail + suffix
+
+
+def _enqueue_one_click_quality_retry(
+    run: OneClickRun,
+    record: ImageRecord,
+    job: JobRecord,
+    quality: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """Retry once by adding Qwen's validated interior point to the same box."""
+    if run.quality_retry_count >= 1:
+        return False, "retry_limit_reached"
+    if run.grounding_id is None or run.selected_candidate_index is None:
+        return False, "grounding_unavailable"
+    grounding = _load_grounding(run.grounding_id)
+    if (
+        grounding is None
+        or grounding.owner_id != run.owner_id
+        or grounding.image_id != record.image_id
+        or not 0 <= run.selected_candidate_index < len(grounding.proposal.candidates)
+    ):
+        return False, "grounding_unavailable"
+    point = grounding.proposal.candidates[run.selected_candidate_index].absolute_point(record.width, record.height)
+    if point is None:
+        return False, "qwen_point_unavailable"
+    existing_points = [dict(value) for value in job.input_payload.get("points", []) if isinstance(value, dict)]
+    if any(
+        value.get("label") == 1
+        and isinstance(value.get("x"), (int, float))
+        and isinstance(value.get("y"), (int, float))
+        and math.hypot(float(value["x"]) - point[0], float(value["y"]) - point[1]) <= 1.0
+        for value in existing_points
+    ):
+        return False, "point_already_used"
+    retry_prompt = dict(job.input_payload)
+    retry_prompt["points"] = [*existing_points, {"x": point[0], "y": point[1], "label": 1}]
+    retry_prompt["quality_retry"] = {
+        "attempt": 1,
+        "trigger_codes": list(quality.get("retryable_codes", [])),
+    }
+    retry_job = _enqueue_segment_job(record, run.owner_id, retry_prompt)
+    run.quality_retry_fallback_job_id = job.job_id
+    run.quality_retry_fallback_result_id = run.result_id
+    run.quality_retry_fallback_quality = deepcopy(quality)
+    run.quality_retry_count = 1
+    run.selection_quality = quality
+    run.job_id = retry_job.job_id
+    run.result_id = None
+    run.phase = "segmenting"
+    run.message = "选区质量未通过初检，正在加入主体提示点自动重试一次。"
+    return True, None
 
 
 def _refresh_one_click_run(run: OneClickRun, record: ImageRecord) -> None:
     """Advance only the durable state after SAM2 finishes; never compose here."""
+    with one_click_quality_retry_lock:
+        _refresh_one_click_run_locked(run, record)
+
+
+def _refresh_one_click_run_locked(run: OneClickRun, record: ImageRecord) -> None:
     if run.phase != "segmenting" or run.job_id is None:
         return
     job = job_manager.get(run.job_id)
     if job is None or job.owner_id != run.owner_id:
+        if _restore_one_click_quality_fallback(
+            run,
+            record,
+            reason="retry_job_unavailable",
+            outcome="restored_initial_result",
+            message="自动重试任务已失效，已保留首次选区供你手动微调。",
+        ):
+            _save_one_click_run(run)
+            return
         run.phase = "failed"
         run.message = "处理任务已失效，请重新执行。"
         _save_one_click_run(run)
         return
     if job.status == "failed":
+        if _restore_one_click_quality_fallback(
+            run,
+            record,
+            reason="retry_job_failed",
+            outcome="restored_initial_result",
+            message="自动重试未完成，已保留首次选区供你手动微调。",
+        ):
+            _save_one_click_run(run)
+            return
         run.phase = "failed"
         run.message = job.error or "没有完成选区生成。"
         _save_one_click_run(run)
@@ -1340,13 +1818,109 @@ def _refresh_one_click_run(run: OneClickRun, record: ImageRecord) -> None:
     result = job.result if isinstance(job.result, dict) else None
     result_id = result.get("result_id") if isinstance(result, dict) else None
     if not isinstance(result_id, str) or not IMAGE_ID_RE.fullmatch(result_id):
+        if _restore_one_click_quality_fallback(
+            run,
+            record,
+            reason="retry_result_invalid",
+            outcome="restored_initial_result",
+            message="自动重试没有返回可用结果，已保留首次选区供你手动微调。",
+        ):
+            _save_one_click_run(run)
+            return
         run.phase = "failed"
         run.message = "选区完成后没有返回可编辑结果，请重新执行。"
         _save_one_click_run(run)
         return
-    quality_message = _one_click_quality_message(record, job)
+    previous_quality = run.selection_quality
+    quality = _one_click_selection_quality(record, job)
     run.result_id = result_id
     plan = _one_click_plan(run)
+    quality_codes = {
+        check.get("code")
+        for check in quality.get("checks", [])
+        if isinstance(check, dict) and isinstance(check.get("code"), str)
+    }
+
+    if run.quality_retry_count == 0 and "mask_artifact_unavailable" in quality_codes:
+        run.selection_quality = _one_click_quality_unavailable(
+            quality,
+            "initial_result_damaged",
+        )
+        # Do not expose a succeeded job whose editable mask no longer exists.
+        run.job_id = None
+        run.result_id = None
+        run.phase = "failed"
+        run.message = "选区结果文件丢失，无法继续编辑。请重新执行一次。"
+        _save_one_click_run(run)
+        return
+
+    if run.quality_retry_count > 0:
+        initial_quality = (
+            run.quality_retry_fallback_quality
+            if isinstance(run.quality_retry_fallback_quality, dict)
+            else previous_quality
+        )
+        trigger_codes = (
+            list(initial_quality.get("retryable_codes", []))
+            if isinstance(initial_quality, dict)
+            else []
+        )
+        if (
+            "mask_artifact_unavailable" in quality_codes
+            and _restore_one_click_quality_fallback(
+                run,
+                record,
+                reason="retry_result_damaged",
+                outcome="restored_initial_result",
+                message="自动重试结果文件不可用，已保留首次选区供你手动微调。",
+            )
+        ):
+            _save_one_click_run(run)
+            return
+        if (
+            isinstance(initial_quality, dict)
+            and _one_click_quality_rank(initial_quality) <= _one_click_quality_rank(quality)
+            and _restore_one_click_quality_fallback(
+                run,
+                record,
+                reason="retry_result_worse",
+                outcome="kept_initial_result",
+                message="自动重试结果没有改善，已保留较好的首次选区供你手动微调。",
+            )
+        ):
+            _save_one_click_run(run)
+            return
+        if quality.get("recommended_action") == "retry_with_point":
+            quality = _one_click_quality_after_retry(
+                quality,
+                outcome="kept_retry_result",
+                trigger_codes=trigger_codes,
+                manual_reason="retry_limit_reached",
+            )
+        else:
+            quality = _one_click_quality_after_retry(
+                quality,
+                outcome="used_retry_result",
+                trigger_codes=trigger_codes,
+            )
+
+    run.selection_quality = quality
+    if quality.get("recommended_action") == "retry_with_point":
+        retry_skipped_reason = None
+        try:
+            enqueued, retry_skipped_reason = _enqueue_one_click_quality_retry(run, record, job, quality)
+            if enqueued:
+                _save_one_click_run(run)
+                return
+        except queue.Full:
+            app.logger.info("SAM2 quality retry skipped because the queue is full")
+            retry_skipped_reason = "queue_full"
+        quality = _one_click_quality_retry_skipped(
+            quality,
+            retry_skipped_reason or "retry_unavailable",
+        )
+        run.selection_quality = quality
+    quality_message = _one_click_quality_message(quality, retried=run.quality_retry_count > 0)
     if quality_message is not None:
         run.phase = "needs_input"
         run.message = quality_message
@@ -1570,7 +2144,7 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
     )
     _reject_payload_fields(
         background,
-        {"mode", "color", "blur_px", "brightness", "saturation", "grayscale"},
+        {"mode", "image_id", "color", "blur_px", "brightness", "saturation", "grayscale"},
         "background",
     )
     _reject_payload_fields(
@@ -1604,7 +2178,19 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
     _reject_payload_fields(crop, {"enabled", "padding_px", "aspect_ratio"}, "crop")
     mode = background.get("mode", "original")
     if not isinstance(mode, str) or mode not in EDIT_BACKGROUND_MODES:
-        raise ValueError("背景模式只能是 original、transparent、color 或 blur。")
+        raise ValueError("背景模式只能是 original、transparent、color、blur 或 image。")
+    background_image_id = background.get("image_id")
+    if mode == "image":
+        if not isinstance(background_image_id, str) or not IMAGE_ID_RE.fullmatch(background_image_id):
+            raise ValueError("使用自定义背景时，请先上传一张背景图片。")
+        # Resolve it now so another browser can never reference an otherwise
+        # valid-looking image id.  It is resolved again immediately before
+        # rendering in case the temporary upload expired in between.
+        _require_record(background_image_id)
+    else:
+        if background_image_id is not None:
+            raise ValueError("只有自定义图片背景可以包含 image_id。")
+        background_image_id = None
     if mode == "color":
         color = background.get("color")
         if not isinstance(color, str) or not HEX_COLOR_RE.fullmatch(color):
@@ -1666,7 +2252,7 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
         raise ValueError("裁切比例只能是 free、1:1、4:5 或 16:9。")
     subject_opacity = _bounded_integer(subject.get("opacity"), "主体不透明度", 0, 100, 100)
     if subject_opacity < 100 and mode == "original":
-        raise ValueError("降低主体透明度时，请先选择透明、纯色或虚化背景。")
+        raise ValueError("降低主体透明度时，请先选择透明、纯色、虚化或图片背景。")
     return {
         "strokes": _parse_mask_strokes(selection.get("strokes"), record.width, record.height),
         "edge_offset": _bounded_integer(
@@ -1675,6 +2261,7 @@ def _parse_edit_settings(payload: dict[str, Any], record: ImageRecord) -> dict[s
         "feather_px": _bounded_integer(selection.get("feather_px"), "羽化像素", 0, MAX_EDIT_FEATHER, 0),
         "cleanup": cleanup,
         "background_mode": mode,
+        "background_image_id": background_image_id,
         "background_color": color.lower(),
         "background_blur_px": background_blur_px,
         "background_brightness": background_brightness,
@@ -1854,6 +2441,10 @@ def _render_local_edit(
     mask = _load_result_mask(result_dir, record)
     mask = apply_mask_strokes(mask, settings["strokes"])
     mask = refine_mask(mask, edge_offset=settings["edge_offset"], cleanup=settings["cleanup"])
+    background_image_rgb = None
+    if settings["background_mode"] == "image":
+        background_record = _require_record(settings.get("background_image_id"))
+        background_image_rgb = _load_rgb(background_record)
     rendered = compose_edit(
         _load_rgb(record),
         mask,
@@ -1880,6 +2471,7 @@ def _render_local_edit(
         shadow_color=_rgb_color(settings["shadow_color"]),
         shadow_opacity=settings["shadow_opacity"],
         feather_px=settings["feather_px"],
+        background_image_rgb=background_image_rgb,
     )
     if settings["crop_enabled"]:
         effect_margin = max(
@@ -2811,8 +3403,6 @@ def _one_click_has_visible_effect(plan: OneClickEditPlan) -> bool:
     settings = plan.as_edit_settings()
     return bool(
         settings["background_mode"] != "original"
-        or settings["edge_offset"]
-        or settings["feather_px"]
         or settings["background_brightness"]
         or settings["background_saturation"]
         or settings["background_grayscale"]
@@ -2830,7 +3420,9 @@ def _one_click_has_visible_effect(plan: OneClickEditPlan) -> bool:
     )
 
 
-def _normalise_subject_first_plan(plan: OneClickEditPlan) -> OneClickEditPlan:
+def _normalise_subject_first_plan(
+    plan: OneClickEditPlan, instruction: str | None = None
+) -> OneClickEditPlan:
     """Keep a clear subject executable even when editing effects are absent.
 
     Qwen remains responsible for semantic rewriting, but the server enforces the
@@ -2838,6 +3430,9 @@ def _normalise_subject_first_plan(plan: OneClickEditPlan) -> OneClickEditPlan:
     non-ready model replies with a usable target become honest selection-only
     plans; their rejected effect settings were already discarded by the parser.
     """
+
+    if instruction is not None:
+        return normalise_one_click_plan_for_instruction(plan, instruction)
 
     if plan.status == "ready" and plan.target:
         visible_effect = _one_click_has_visible_effect(plan)
@@ -2974,7 +3569,7 @@ def create_one_click_run() -> Any:
 
     try:
         plan = _normalise_subject_first_plan(
-            edit_planner.plan(_load_rgb(record), instruction)
+            edit_planner.plan(_load_rgb(record), instruction), instruction
         )
     except GroundingError as error:
         app.logger.warning("One-click edit planning failed: %s", error)

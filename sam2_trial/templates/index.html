@@ -174,6 +174,18 @@
             <span><i class="legend-dot legend-dot--negative"></i>排除</span>
             <span><i class="legend-box"></i>框选</span>
           </div>
+
+          <div id="edit-result" class="edit-result edit-result--canvas" hidden aria-live="polite">
+            <div class="result-heading-row">
+              <h3>编辑结果已显示</h3>
+              <span class="result-check" aria-label="完成">✓</span>
+            </div>
+            <p id="edit-summary" class="result-summary"></p>
+            <div class="download-links">
+              <a id="edited-download-link" href="#" download>下载当前编辑 PNG</a>
+              <a id="edited-mask-link" href="#" download>下载修正后 Mask</a>
+            </div>
+          </div>
         </section>
 
         <aside class="panel job-panel" aria-labelledby="job-title">
@@ -206,6 +218,10 @@
               <span class="editor-chip">高清 PNG 导出</span>
             </div>
             <p id="editor-note" class="editor-note">修改后再生成预览；每次都从原图重做。</p>
+            <div class="editor-history-actions" aria-label="编辑历史">
+              <button id="undo-edit" class="text-button" type="button" disabled>撤销修改</button>
+              <button id="redo-edit" class="text-button" type="button" disabled>重做修改</button>
+            </div>
 
             <section class="editor-fold" data-editor-fold="selection">
               <button class="editor-fold__toggle" type="button" aria-expanded="true" aria-controls="editor-fold-selection">
@@ -227,7 +243,8 @@
                     <input id="mask-brush-radius" type="range" min="3" max="100" step="1" value="24">
                   </label>
                   <div class="editor-tool-row">
-                    <button id="undo-mask-stroke" class="mode-button" type="button" disabled>撤销笔刷</button>
+                    <button id="undo-mask-stroke" class="mode-button" type="button" disabled>撤销一笔</button>
+                    <button id="redo-mask-stroke" class="mode-button" type="button" disabled>重做一笔</button>
                     <button id="clear-mask-strokes" class="text-button" type="button" disabled>清除笔刷</button>
                   </div>
                   <label class="range-control" for="edge-offset">
@@ -260,6 +277,7 @@
                       <option value="transparent">透明背景</option>
                       <option value="color">纯色背景</option>
                       <option value="blur">背景虚化</option>
+                      <option value="image">上传背景图片</option>
                     </select>
                   </label>
                   <label id="background-color-row" class="color-control" for="background-color" hidden><span>背景颜色</span><input id="background-color" type="color" value="#ffffff"></label>
@@ -267,6 +285,15 @@
                     <span>虚化强度 <output id="background-blur-px-value">18 px</output></span>
                     <input id="background-blur-px" type="range" min="1" max="40" step="1" value="18">
                   </label>
+                  <div id="background-image-row" class="background-image-control" hidden>
+                    <input id="background-image-input" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+                    <div class="background-image-control__actions">
+                      <button id="choose-background-image" class="mode-button" type="button">选择背景图片</button>
+                      <button id="clear-background-image" class="text-button" type="button" hidden>移除</button>
+                    </div>
+                    <img id="background-image-preview" alt="自定义背景预览" hidden>
+                    <p id="background-image-note">图片会铺满输出画布，超出部分自动裁切。</p>
+                  </div>
                   <label class="range-control" for="background-brightness">
                     <span>亮度 <output id="background-brightness-value">0</output></span>
                     <input id="background-brightness" type="range" min="-60" max="60" step="1" value="0">
@@ -404,14 +431,6 @@
               <button id="reset-edit" class="button button--secondary" type="button" disabled>恢复默认</button>
             </div>
 
-            <div id="edit-result" class="edit-result" hidden>
-              <img id="edit-preview" alt="当前局部编辑预览">
-              <p id="edit-summary" class="result-summary"></p>
-              <div class="download-links">
-                <a id="edited-download-link" href="#" download>下载当前编辑 PNG</a>
-                <a id="edited-mask-link" href="#" download>下载修正后 Mask</a>
-              </div>
-            </div>
           </section>
 
         </aside>

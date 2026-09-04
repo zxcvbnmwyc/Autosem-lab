@@ -279,6 +279,50 @@ def crop_to_subject(
     return image[y0:y1, x0:x1].copy(), mask[y0:y1, x0:x1].copy()
 
 
+def _fit_background_cover(
+    background_rgb: np.ndarray, target_height: int, target_width: int
+) -> np.ndarray:
+    """Centre-crop to the target ratio, then resize without a large intermediate."""
+    if background_rgb.ndim != 3 or background_rgb.shape[2] != 3:
+        raise ValueError("Expected an RGB background image.")
+    source_height, source_width = background_rgb.shape[:2]
+    if source_height < 1 or source_width < 1:
+        raise ValueError("Background image cannot be empty.")
+    if target_height < 1 or target_width < 1:
+        raise ValueError("Target background dimensions must be positive.")
+
+    # A resize-first cover fit can turn an extreme panorama into a huge, mostly
+    # discarded intermediate image.  Crop the excess dimension while the image
+    # is still at source resolution, then allocate only the final target size.
+    if source_width * target_height > source_height * target_width:
+        crop_height = source_height
+        crop_width = min(
+            source_width,
+            max(1, int(round(source_height * target_width / target_height))),
+        )
+    else:
+        crop_width = source_width
+        crop_height = min(
+            source_height,
+            max(1, int(round(source_width * target_height / target_width))),
+        )
+    x0 = (source_width - crop_width) // 2
+    y0 = (source_height - crop_height) // 2
+    cropped = np.ascontiguousarray(
+        background_rgb[y0 : y0 + crop_height, x0 : x0 + crop_width]
+    )
+    interpolation = (
+        cv2.INTER_AREA
+        if target_width < crop_width or target_height < crop_height
+        else cv2.INTER_CUBIC
+    )
+    return cv2.resize(
+        cropped,
+        (target_width, target_height),
+        interpolation=interpolation,
+    )
+
+
 def compose_edit(
     image_rgb: np.ndarray,
     mask: np.ndarray,
@@ -306,6 +350,7 @@ def compose_edit(
     shadow_blur_px: int = 0,
     shadow_color: tuple[int, int, int] = (0, 0, 0),
     shadow_opacity: int = 0,
+    background_image_rgb: np.ndarray | None = None,
 ) -> np.ndarray:
     """Render a full-resolution RGB or RGBA edit from a source image and mask."""
     if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
@@ -328,6 +373,12 @@ def compose_edit(
     if background_mode == "color":
         background = np.empty_like(image_rgb)
         background[:, :] = background_color
+    elif background_mode == "image":
+        if background_image_rgb is None:
+            raise ValueError("Custom background mode requires an image.")
+        background = _fit_background_cover(
+            background_image_rgb, image_rgb.shape[0], image_rgb.shape[1]
+        )
     elif background_mode == "blur":
         sigma = max(0.1, float(background_blur_px) / 2.0)
         background = cv2.GaussianBlur(image_rgb, (0, 0), sigmaX=sigma, sigmaY=sigma, borderType=cv2.BORDER_REPLICATE)

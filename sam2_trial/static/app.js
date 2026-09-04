@@ -48,6 +48,7 @@
   const maskBrushRadius = document.getElementById("mask-brush-radius");
   const maskBrushRadiusValue = document.getElementById("mask-brush-radius-value");
   const undoMaskStrokeButton = document.getElementById("undo-mask-stroke");
+  const redoMaskStrokeButton = document.getElementById("redo-mask-stroke");
   const clearMaskStrokesButton = document.getElementById("clear-mask-strokes");
   const edgeOffset = document.getElementById("edge-offset");
   const edgeOffsetValue = document.getElementById("edge-offset-value");
@@ -60,6 +61,12 @@
   const backgroundBlurRow = document.getElementById("background-blur-row");
   const backgroundBlurPx = document.getElementById("background-blur-px");
   const backgroundBlurPxValue = document.getElementById("background-blur-px-value");
+  const backgroundImageRow = document.getElementById("background-image-row");
+  const backgroundImageInput = document.getElementById("background-image-input");
+  const chooseBackgroundImageButton = document.getElementById("choose-background-image");
+  const clearBackgroundImageButton = document.getElementById("clear-background-image");
+  const backgroundImagePreview = document.getElementById("background-image-preview");
+  const backgroundImageNote = document.getElementById("background-image-note");
   const backgroundBrightness = document.getElementById("background-brightness");
   const backgroundBrightnessValue = document.getElementById("background-brightness-value");
   const backgroundSaturation = document.getElementById("background-saturation");
@@ -101,8 +108,9 @@
   const cropAspectRatio = document.getElementById("crop-aspect-ratio");
   const applyEditButton = document.getElementById("apply-edit");
   const resetEditButton = document.getElementById("reset-edit");
+  const undoEditButton = document.getElementById("undo-edit");
+  const redoEditButton = document.getElementById("redo-edit");
   const editResult = document.getElementById("edit-result");
-  const editPreview = document.getElementById("edit-preview");
   const editSummary = document.getElementById("edit-summary");
   const editedDownloadLink = document.getElementById("edited-download-link");
   const editedMaskLink = document.getElementById("edited-mask-link");
@@ -162,7 +170,17 @@
     maskOverlayVisible: true,
     maskOverlayToken: 0,
     maskStrokes: [],
+    maskStrokeRedo: [],
     activeMaskStroke: null,
+    editUndo: [],
+    editRedo: [],
+    editHistoryCurrent: null,
+    editHistoryRestoring: false,
+    backgroundImageId: null,
+    backgroundImageUrl: null,
+    backgroundImageName: "",
+    backgroundImageUploading: false,
+    backgroundImageUploadToken: 0,
     showingEdit: false,
     groundingId: null,
     groundingCandidates: [],
@@ -284,9 +302,10 @@
 
   function refreshEditorControls() {
     const available = editorAvailable();
-    const disabled = state.busy || !available;
+    const disabled = state.busy || state.backgroundImageUploading || !available;
+    const customBackgroundPending = Boolean(backgroundMode && backgroundMode.value === "image" && !state.backgroundImageId);
     if (applyEditButton) {
-      applyEditButton.disabled = disabled;
+      applyEditButton.disabled = disabled || customBackgroundPending;
     }
     if (resetEditButton) {
       resetEditButton.disabled = state.busy || !state.resultId;
@@ -296,11 +315,20 @@
     });
     if (cropPaddingPx) cropPaddingPx.disabled = disabled || !(cropEnabled && cropEnabled.checked);
     if (cropAspectRatio) cropAspectRatio.disabled = disabled || !(cropEnabled && cropEnabled.checked);
-    [maskAddButton, maskEraseButton, undoMaskStrokeButton, clearMaskStrokesButton].forEach((button) => {
+    [maskAddButton, maskEraseButton, undoMaskStrokeButton, redoMaskStrokeButton, clearMaskStrokesButton].forEach((button) => {
       if (button) {
-        button.disabled = disabled || !state.maskSource || (button === undoMaskStrokeButton && !state.maskStrokes.length) || (button === clearMaskStrokesButton && !state.maskStrokes.length);
+        button.disabled = disabled
+          || !state.maskSource
+          || (button === undoMaskStrokeButton && !state.maskStrokes.length)
+          || (button === redoMaskStrokeButton && !state.maskStrokeRedo.length)
+          || (button === clearMaskStrokesButton && !state.maskStrokes.length);
       }
     });
+    if (undoEditButton) undoEditButton.disabled = disabled || !state.editUndo.length;
+    if (redoEditButton) redoEditButton.disabled = disabled || !state.editRedo.length;
+    if (chooseBackgroundImageButton) chooseBackgroundImageButton.disabled = disabled;
+    if (backgroundImageInput) backgroundImageInput.disabled = disabled;
+    if (clearBackgroundImageButton) clearBackgroundImageButton.disabled = disabled || !state.backgroundImageId;
     if (toggleMaskOverlayButton) {
       toggleMaskOverlayButton.hidden = !state.maskOverlay;
       toggleMaskOverlayButton.disabled = state.busy || !state.maskOverlay;
@@ -499,6 +527,7 @@
     state.maskSource = null;
     state.maskOverlay = null;
     state.maskStrokes = [];
+    state.maskStrokeRedo = [];
     state.activeMaskStroke = null;
   }
 
@@ -523,6 +552,7 @@
       state.maskSource = layer;
       if (settings.resetStrokes) {
         state.maskStrokes = [];
+        state.maskStrokeRedo = [];
       }
       rebuildMaskOverlay();
       redraw();
@@ -708,6 +738,153 @@
     });
   }
 
+  function cloneMaskStrokes(strokes) {
+    return (Array.isArray(strokes) ? strokes : []).map((stroke) => ({
+      mode: stroke.mode === "erase" ? "erase" : "add",
+      radius: Math.max(1, Number(stroke.radius) || 24),
+      points: (Array.isArray(stroke.points) ? stroke.points : []).map((point) => ({
+        x: Number(point.x),
+        y: Number(point.y),
+      })),
+    }));
+  }
+
+  function captureEditorSnapshot() {
+    const controls = {};
+    editorInputs.forEach((input) => {
+      controls[input.id] = input.type === "checkbox" ? Boolean(input.checked) : input.value;
+    });
+    return {
+      controls,
+      maskStrokes: cloneMaskStrokes(state.maskStrokes),
+      maskStrokeRedo: cloneMaskStrokes(state.maskStrokeRedo),
+      maskOverlayVisible: state.maskOverlayVisible,
+      backgroundImageId: state.backgroundImageId,
+      backgroundImageUrl: state.backgroundImageUrl,
+      backgroundImageName: state.backgroundImageName,
+    };
+  }
+
+  function sameEditorSnapshot(first, second) {
+    return Boolean(first && second && JSON.stringify(first) === JSON.stringify(second));
+  }
+
+  function editorSnapshotAffectsOutput(first, second) {
+    if (!first || !second) return true;
+    const outputState = (snapshot) => ({
+      controls: snapshot.controls,
+      maskStrokes: snapshot.maskStrokes,
+      backgroundImageId: snapshot.backgroundImageId,
+    });
+    return JSON.stringify(outputState(first)) !== JSON.stringify(outputState(second));
+  }
+
+  function resetEditorHistory() {
+    state.editUndo = [];
+    state.editRedo = [];
+    state.editHistoryCurrent = captureEditorSnapshot();
+    refreshActions();
+  }
+
+  function invalidateEditPreview() {
+    const hadPreview = Boolean(state.editImage || (editResult && !editResult.hidden));
+    state.editImage = null;
+    state.showingEdit = false;
+    if (editResult) editResult.hidden = true;
+    if (hadPreview && state.baseImage) {
+      displayCanvasImage(state.baseImage, state.width, state.height, { asBase: false });
+    }
+  }
+
+  function commitEditorMutation(previousSnapshot, options) {
+    if (state.editHistoryRestoring) {
+      return false;
+    }
+    const settings = options || {};
+    const before = previousSnapshot || state.editHistoryCurrent || captureEditorSnapshot();
+    const after = captureEditorSnapshot();
+    if (sameEditorSnapshot(before, after)) {
+      state.editHistoryCurrent = after;
+      return false;
+    }
+    state.editUndo.push(before);
+    if (state.editUndo.length > 60) state.editUndo.shift();
+    state.editRedo = [];
+    state.editHistoryCurrent = after;
+    if (settings.invalidatePreview !== false) invalidateEditPreview();
+    refreshActions();
+    return true;
+  }
+
+  function renderBackgroundImageControl() {
+    const isImageMode = Boolean(backgroundMode && backgroundMode.value === "image");
+    if (backgroundImageRow) backgroundImageRow.hidden = !isImageMode;
+    if (backgroundImagePreview) {
+      backgroundImagePreview.hidden = !state.backgroundImageUrl;
+      if (state.backgroundImageUrl) backgroundImagePreview.src = state.backgroundImageUrl;
+      else backgroundImagePreview.removeAttribute("src");
+    }
+    if (clearBackgroundImageButton) clearBackgroundImageButton.hidden = !state.backgroundImageId;
+    if (chooseBackgroundImageButton) {
+      chooseBackgroundImageButton.textContent = state.backgroundImageId ? "更换背景图片" : "选择背景图片";
+    }
+    if (backgroundImageNote) {
+      backgroundImageNote.textContent = state.backgroundImageUploading
+        ? "正在上传背景图片…"
+        : state.backgroundImageName
+          ? state.backgroundImageName + " · 将铺满输出画布"
+          : "图片会铺满输出画布，超出部分自动裁切。";
+    }
+  }
+
+  function restoreEditorSnapshot(snapshot) {
+    if (!snapshot || !snapshot.controls) {
+      return;
+    }
+    const current = captureEditorSnapshot();
+    const outputChanged = editorSnapshotAffectsOutput(current, snapshot);
+    state.editHistoryRestoring = true;
+    editorInputs.forEach((input) => {
+      if (!Object.prototype.hasOwnProperty.call(snapshot.controls, input.id)) return;
+      if (input.type === "checkbox") input.checked = Boolean(snapshot.controls[input.id]);
+      else input.value = String(snapshot.controls[input.id]);
+    });
+    state.maskStrokes = cloneMaskStrokes(snapshot.maskStrokes);
+    state.maskStrokeRedo = cloneMaskStrokes(snapshot.maskStrokeRedo);
+    state.maskOverlayVisible = snapshot.maskOverlayVisible !== false;
+    state.backgroundImageId = typeof snapshot.backgroundImageId === "string" ? snapshot.backgroundImageId : null;
+    state.backgroundImageUrl = typeof snapshot.backgroundImageUrl === "string" ? snapshot.backgroundImageUrl : null;
+    state.backgroundImageName = typeof snapshot.backgroundImageName === "string" ? snapshot.backgroundImageName : "";
+    state.activeMaskStroke = null;
+    if (outputChanged) invalidateEditPreview();
+    rebuildMaskOverlay();
+    renderBackgroundImageControl();
+    syncEditControls();
+    redraw();
+    state.editHistoryRestoring = false;
+    refreshActions();
+  }
+
+  function undoEditorChange() {
+    if (!state.editUndo.length || state.busy || state.backgroundImageUploading) return;
+    const current = captureEditorSnapshot();
+    const previous = state.editUndo.pop();
+    state.editRedo.push(current);
+    restoreEditorSnapshot(previous);
+    state.editHistoryCurrent = captureEditorSnapshot();
+    setStatus("已撤销上一次编辑修改。", "");
+  }
+
+  function redoEditorChange() {
+    if (!state.editRedo.length || state.busy || state.backgroundImageUploading) return;
+    const current = captureEditorSnapshot();
+    const next = state.editRedo.pop();
+    state.editUndo.push(current);
+    restoreEditorSnapshot(next);
+    state.editHistoryCurrent = captureEditorSnapshot();
+    setStatus("已重做上一次编辑修改。", "");
+  }
+
   function beginMaskStroke(point, pointerId) {
     const radius = Math.max(1, Number(maskBrushRadius && maskBrushRadius.value) || 24);
     state.activeMaskStroke = {
@@ -738,13 +915,16 @@
     if (!state.activeMaskStroke) {
       return false;
     }
+    const previous = captureEditorSnapshot();
     state.maskStrokes.push(state.activeMaskStroke);
+    state.maskStrokeRedo = [];
     state.activeMaskStroke = null;
     if (canvas.hasPointerCapture(pointerId)) {
       canvas.releasePointerCapture(pointerId);
     }
     rebuildMaskOverlay();
     redraw();
+    commitEditorMutation(previous);
     refreshActions();
     setStatus("已记录笔刷，可生成原图尺寸预览。", "success");
     return true;
@@ -754,20 +934,38 @@
     if (!state.maskStrokes.length || state.busy) {
       return;
     }
-    state.maskStrokes.pop();
+    const previous = captureEditorSnapshot();
+    state.maskStrokeRedo.push(state.maskStrokes.pop());
     rebuildMaskOverlay();
     redraw();
+    commitEditorMutation(previous);
     refreshActions();
     setStatus("已撤销最后一笔选区修正。", "");
+  }
+
+  function redoMaskStroke() {
+    if (!state.maskStrokeRedo.length || state.busy) {
+      return;
+    }
+    const previous = captureEditorSnapshot();
+    state.maskStrokes.push(state.maskStrokeRedo.pop());
+    rebuildMaskOverlay();
+    redraw();
+    commitEditorMutation(previous);
+    refreshActions();
+    setStatus("已重做最后一笔选区修正。", "");
   }
 
   function clearMaskStrokes() {
     if (!state.maskStrokes.length || state.busy) {
       return;
     }
+    const previous = captureEditorSnapshot();
+    state.maskStrokeRedo = [];
     state.maskStrokes = [];
     rebuildMaskOverlay();
     redraw();
+    commitEditorMutation(previous);
     refreshActions();
     setStatus("手动选区笔刷已清除。", "");
   }
@@ -1326,6 +1524,7 @@
     if (cropAspectRatio && typeof crop.aspect_ratio === "string") cropAspectRatio.value = crop.aspect_ratio;
     syncEditControls();
     expandPlanDrivenFolds(plan);
+    resetEditorHistory();
   }
 
   function applyOneClickRun(run) {
@@ -1641,7 +1840,16 @@
     state.resultId = null;
     state.selectionDirty = false;
     state.showingEdit = false;
+    state.backgroundImageUploadToken += 1;
+    state.backgroundImageUploading = false;
+    state.backgroundImageId = null;
+    state.backgroundImageUrl = null;
+    state.backgroundImageName = "";
+    state.editUndo = [];
+    state.editRedo = [];
+    state.editHistoryCurrent = null;
     clearMaskOverlay();
+    renderBackgroundImageControl();
     state.previewToken += 1;
     const previewToken = state.previewToken;
     safeSessionRemove(activeJobStorageKey);
@@ -1680,6 +1888,67 @@
       setBusy(false);
       setStatus(error.message, "error");
     }
+  }
+
+  async function uploadBackgroundImage(file) {
+    if (!editorAvailable() || !file || state.busy || state.backgroundImageUploading) {
+      return;
+    }
+    if (!/^image\/(jpeg|png|webp)$/i.test(file.type || "")) {
+      setStatus("背景图片仅支持 JPG、PNG 或 WebP。", "error");
+      if (backgroundImageInput) backgroundImageInput.value = "";
+      return;
+    }
+    const previous = captureEditorSnapshot();
+    const token = ++state.backgroundImageUploadToken;
+    state.backgroundImageUploading = true;
+    renderBackgroundImageControl();
+    refreshActions();
+    setStatus("正在上传背景图片…", "working");
+    const form = new FormData();
+    form.append("image", file);
+    try {
+      const response = await fetch("/api/upload", { method: "POST", body: form });
+      const payload = await readResponse(response);
+      if (token !== state.backgroundImageUploadToken) return;
+      if (typeof payload.image_id !== "string" || !payload.image_id) {
+        throw new Error("服务器没有返回背景图片编号，请重新选择。 ");
+      }
+      state.backgroundImageId = payload.image_id;
+      state.backgroundImageUrl = typeof payload.preview_url === "string" && payload.preview_url
+        ? payload.preview_url
+        : typeof payload.image_url === "string" ? payload.image_url : null;
+      state.backgroundImageName = file.name;
+      state.backgroundImageUploading = false;
+      renderBackgroundImageControl();
+      commitEditorMutation(previous);
+      syncEditControls();
+      refreshActions();
+      setStatus("背景图片已准备好，生成预览即可查看合成结果。", "success");
+    } catch (error) {
+      if (token !== state.backgroundImageUploadToken) return;
+      state.backgroundImageUploading = false;
+      renderBackgroundImageControl();
+      refreshActions();
+      setStatus(error.message, "error");
+    } finally {
+      if (backgroundImageInput) backgroundImageInput.value = "";
+    }
+  }
+
+  function clearBackgroundImage() {
+    if (!state.backgroundImageId || state.busy || state.backgroundImageUploading) return;
+    const previous = captureEditorSnapshot();
+    state.backgroundImageUploadToken += 1;
+    state.backgroundImageId = null;
+    state.backgroundImageUrl = null;
+    state.backgroundImageName = "";
+    if (backgroundImageInput) backgroundImageInput.value = "";
+    renderBackgroundImageControl();
+    commitEditorMutation(previous);
+    syncEditControls();
+    refreshActions();
+    setStatus("已移除自定义背景，请重新选择图片。", "");
   }
 
   async function autoGround() {
@@ -1802,8 +2071,7 @@
       syncOneClickPlanToEditor(run.plan);
       await displayEditResult(run.edit);
       setBusy(false);
-      setStatus("处理完成。可下载原图尺寸 PNG，或继续微调。", "success");
-      if (editResult) editResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      setStatus("处理完成。结果已显示在中间画布，可下载原图尺寸 PNG，或继续微调。", "success");
       return;
     }
     if (phase === "selection_ready") {
@@ -2265,12 +2533,13 @@
 
     const backgroundSummary = [];
     const mode = backgroundMode ? backgroundMode.value : "original";
-    const backgroundModeCopy = { original: "原背景", transparent: "透明", color: "纯色", blur: "虚化" };
+    const backgroundModeCopy = { original: "原背景", transparent: "透明", color: "纯色", blur: "虚化", image: "自定义图片" };
     backgroundSummary.push(backgroundModeCopy[mode] || "原背景");
     const backgroundBrightnessValue = editNumber(backgroundBrightness, 0);
     const backgroundSaturationValue = editNumber(backgroundSaturation, 0);
     if (mode === "color") backgroundSummary.push(validHexColor(backgroundColor && backgroundColor.value, "#FFFFFF"));
     if (mode === "blur") backgroundSummary.push(pxSummary("虚化", editNumber(backgroundBlurPx, 18)));
+    if (mode === "image" && state.backgroundImageName) backgroundSummary.push(state.backgroundImageName);
     if (backgroundBrightnessValue) backgroundSummary.push(numberSummary("亮度", backgroundBrightnessValue));
     if (backgroundSaturationValue) backgroundSummary.push(numberSummary("饱和度", backgroundSaturationValue));
     if (backgroundGrayscale && backgroundGrayscale.checked) backgroundSummary.push("灰度");
@@ -2375,6 +2644,7 @@
     const mode = backgroundMode ? backgroundMode.value : "original";
     if (backgroundColorRow) backgroundColorRow.hidden = mode !== "color";
     if (backgroundBlurRow) backgroundBlurRow.hidden = mode !== "blur";
+    renderBackgroundImageControl();
     const editorDisabled = state.busy || !editorAvailable();
     if (cropPaddingPx) cropPaddingPx.disabled = editorDisabled || !(cropEnabled && cropEnabled.checked);
     if (cropAspectRatio) cropAspectRatio.disabled = editorDisabled || !(cropEnabled && cropEnabled.checked);
@@ -2418,8 +2688,15 @@
     if (cropPaddingPx) cropPaddingPx.value = "24";
     if (cropAspectRatio) cropAspectRatio.value = "free";
     state.maskStrokes = [];
+    state.maskStrokeRedo = [];
     state.activeMaskStroke = null;
     state.maskOverlayVisible = true;
+    state.backgroundImageUploadToken += 1;
+    state.backgroundImageUploading = false;
+    state.backgroundImageId = null;
+    state.backgroundImageUrl = null;
+    state.backgroundImageName = "";
+    if (backgroundImageInput) backgroundImageInput.value = "";
     state.editImage = null;
     state.showingEdit = false;
     if (editResult) editResult.hidden = true;
@@ -2438,11 +2715,14 @@
     setFoldExpanded("subject", false, { skipAccordion: true });
     setFoldExpanded("effects", false, { skipAccordion: true });
     setFoldExpanded("crop", false, { skipAccordion: true });
+    renderBackgroundImageControl();
     syncEditControls();
+    if (!settings.preserveHistory) resetEditorHistory();
     refreshActions();
   }
 
   function buildEditPayload() {
+    const selectedBackgroundMode = backgroundMode ? backgroundMode.value : "original";
     return {
       image_id: state.imageId,
       result_id: state.resultId,
@@ -2457,7 +2737,8 @@
         cleanup: Boolean(maskCleanup && maskCleanup.checked),
       },
       background: {
-        mode: backgroundMode ? backgroundMode.value : "original",
+        mode: selectedBackgroundMode,
+        image_id: selectedBackgroundMode === "image" ? state.backgroundImageId : undefined,
         color: backgroundColor ? backgroundColor.value : "#ffffff",
         blur_px: editNumber(backgroundBlurPx, 18),
         brightness: editNumber(backgroundBrightness, 0),
@@ -2500,7 +2781,7 @@
     const effectSettings = settings && settings.effects && typeof settings.effects === "object" ? settings.effects : settings || {};
     const cropSettings = settings && settings.crop && typeof settings.crop === "object" ? settings.crop : settings || {};
     const mode = backgroundSettings.background_mode || backgroundSettings.mode;
-    const backgroundCopy = { original: "保留原背景", transparent: "透明背景", color: "纯色背景", blur: "背景虚化" };
+    const backgroundCopy = { original: "保留原背景", transparent: "透明背景", color: "纯色背景", blur: "背景虚化", image: "自定义背景" };
     pieces.push(backgroundCopy[mode] || "局部编辑");
     if (settings && Array.isArray(settings.strokes) && settings.strokes.length) {
       pieces.push(String(settings.strokes.length) + " 条选区笔刷");
@@ -2578,7 +2859,6 @@
     if (!result || typeof result.preview_url !== "string" || typeof result.download_url !== "string") {
       throw new Error("编辑任务没有返回完整结果，请重新试一次。 ");
     }
-    editPreview.src = result.preview_url;
     editedDownloadLink.href = result.download_url;
     editedMaskLink.href = typeof result.mask_url === "string" ? result.mask_url : "#";
     [editedDownloadLink, editedMaskLink].forEach((link) => {
@@ -2588,6 +2868,7 @@
     editSummary.textContent = editSummaryText(result.settings);
     editResult.hidden = false;
     await displayEditOnCanvas(result.preview_url);
+    canvasShell.scrollIntoView({ behavior: "smooth", block: "center" });
     refreshActions();
   }
 
@@ -2597,9 +2878,14 @@
       return;
     }
     const payload = buildEditPayload();
+    if (payload.background.mode === "image" && !payload.background.image_id) {
+      setFoldExpanded("background", true);
+      setStatus("请先选择一张背景图片。", "error");
+      return;
+    }
     if (payload.background.mode === "original" && payload.subject.opacity < 100) {
       setFoldExpanded("subject", true);
-      setStatus("降低主体透明度时，请先选择透明、纯色或虚化背景。", "error");
+      setStatus("降低主体透明度时，请先选择透明、纯色、虚化或图片背景。", "error");
       return;
     }
     setBusy(true, "edit");
@@ -2614,8 +2900,8 @@
       await displayEditResult(result);
       setBusy(false);
       setStatus(payload.crop.enabled
-        ? "编辑预览已生成；下载按钮会导出裁切后的高清 PNG。"
-        : "编辑预览已生成；下载按钮会导出原图尺寸 PNG。", "success");
+        ? "结果已显示在中间画布；下载按钮会导出裁切后的高清 PNG。"
+        : "结果已显示在中间画布；下载按钮会导出原图尺寸 PNG。", "success");
     } catch (error) {
       setBusy(false);
       setStatus(error.message, "error");
@@ -2797,12 +3083,24 @@
   if (maskAddButton) maskAddButton.addEventListener("click", () => setMaskTool("mask-add"));
   if (maskEraseButton) maskEraseButton.addEventListener("click", () => setMaskTool("mask-erase"));
   if (undoMaskStrokeButton) undoMaskStrokeButton.addEventListener("click", undoMaskStroke);
+  if (redoMaskStrokeButton) redoMaskStrokeButton.addEventListener("click", redoMaskStroke);
   if (clearMaskStrokesButton) clearMaskStrokesButton.addEventListener("click", clearMaskStrokes);
+  if (undoEditButton) undoEditButton.addEventListener("click", undoEditorChange);
+  if (redoEditButton) redoEditButton.addEventListener("click", redoEditorChange);
+  if (chooseBackgroundImageButton && backgroundImageInput) {
+    chooseBackgroundImageButton.addEventListener("click", () => backgroundImageInput.click());
+    backgroundImageInput.addEventListener("change", () => {
+      const file = backgroundImageInput.files && backgroundImageInput.files[0];
+      if (file) void uploadBackgroundImage(file);
+    });
+  }
+  if (clearBackgroundImageButton) clearBackgroundImageButton.addEventListener("click", clearBackgroundImage);
   if (toggleMaskOverlayButton) {
     toggleMaskOverlayButton.addEventListener("click", () => {
+      const previous = captureEditorSnapshot();
       state.maskOverlayVisible = !state.maskOverlayVisible;
       redraw();
-      refreshActions();
+      commitEditorMutation(previous, { invalidatePreview: false });
     });
   }
   if (showOriginalButton) showOriginalButton.addEventListener("click", toggleOriginalCanvas);
@@ -2810,7 +3108,9 @@
   if (resetEditButton) {
     resetEditButton.addEventListener("click", () => {
       if (!state.resultId || state.busy) return;
-      resetEditControls({ restoreCanvas: true });
+      const previous = captureEditorSnapshot();
+      resetEditControls({ restoreCanvas: true, preserveHistory: true });
+      commitEditorMutation(previous);
       setStatus("编辑设置已恢复默认；原始选区仍然保留。", "");
     });
   }
@@ -2827,7 +3127,10 @@
   });
   editorInputs.forEach((input) => {
     input.addEventListener("input", syncEditControls);
-    input.addEventListener("change", syncEditControls);
+    input.addEventListener("change", () => {
+      syncEditControls();
+      commitEditorMutation();
+    });
   });
   window.addEventListener("resize", () => {
     if (!isSmallViewport()) {
@@ -2938,14 +3241,21 @@
       redraw();
       return;
     }
-    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") {
+    if (!(event.ctrlKey || event.metaKey) || !["z", "y"].includes(event.key.toLowerCase())) {
       return;
     }
     event.preventDefault();
-    if (event.shiftKey) {
+    const redoRequested = event.shiftKey || event.key.toLowerCase() === "y";
+    if (redoRequested && (state.mode === "mask-add" || state.mode === "mask-erase") && state.maskStrokeRedo.length) {
+      redoMaskStroke();
+    } else if (redoRequested && state.editRedo.length) {
+      redoEditorChange();
+    } else if (redoRequested) {
       redoPrompt();
     } else if ((state.mode === "mask-add" || state.mode === "mask-erase") && state.maskStrokes.length) {
       undoMaskStroke();
+    } else if (state.editUndo.length) {
+      undoEditorChange();
     } else {
       undoPrompt();
     }

@@ -23,7 +23,7 @@ class EditingKnowledgeTests(unittest.TestCase):
             {"background.transparent", "subject.brightness"},
         )
         payload = retrieval.as_prompt_data()
-        self.assertEqual(payload["catalog_version"], "2026-09-01.3")
+        self.assertEqual(payload["catalog_version"], "2026-09-04.2")
         self.assertEqual(
             set(payload["matched_operation_ids"]),
             {"background.transparent", "subject.brightness"},
@@ -252,6 +252,42 @@ class EditingKnowledgeTests(unittest.TestCase):
             with self.subTest(instruction=instruction):
                 retrieval = retrieve_editing_knowledge(instruction)
                 self.assertNotIn("effect.shadow", retrieval.matched_operation_ids)
+
+    def test_negated_cutout_never_forces_a_transparent_background(self) -> None:
+        for instruction in (
+            "保留杯子，不要抠图，保留原背景",
+            "keep the cup; do not remove the background",
+        ):
+            with self.subTest(instruction=instruction):
+                retrieval = retrieve_editing_knowledge(instruction)
+                self.assertNotIn(
+                    "background.transparent", retrieval.matched_operation_ids
+                )
+
+    def test_negated_background_effects_do_not_open_execution_gates(self) -> None:
+        cases = (
+            ("保留杯子，背景不要虚化", "background.blur"),
+            ("保留杯子，不要让背景虚化", "background.blur"),
+            ("keep the cup; do not blur the background", "background.blur"),
+            ("keep the cup; don't make the background blurry", "background.blur"),
+            ("保留杯子，不要白底", "background.color"),
+            ("保留杯子，不要把背景变白", "background.color"),
+            ("保留杯子，别让背景变白", "background.color"),
+            ("keep the cup; don't use a white background", "background.color"),
+        )
+        for instruction, operation_id in cases:
+            with self.subTest(instruction=instruction):
+                retrieval = retrieve_editing_knowledge(instruction)
+                self.assertNotIn(operation_id, retrieval.matched_operation_ids)
+
+    def test_later_colour_correction_reopens_the_colour_gate(self) -> None:
+        for instruction in (
+            "保留杯子，不要白底，背景改成蓝色",
+            "keep the cup; don't use a white background, make it blue",
+        ):
+            with self.subTest(instruction=instruction):
+                retrieval = retrieve_editing_knowledge(instruction)
+                self.assertIn("background.color", retrieval.matched_operation_ids)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "catalog_version": "2026-09-01.3",
+  "catalog_version": "2026-09-04.2",
   "retrieval_limit": 10,
   "always_include": [
     {
       "id": "subject.single_visible",
       "aliases": [],
       "scope": "automatic",
-      "rule": "一次自动执行只处理一个主体。用户不需要说“保留”或字段名；从句子中提取承受动作或被明确指代的对象。只输入主体也可返回 ready 并使用全默认值生成选区。只有文字中完全没有主体或对象指代时才返回 needs_input/missing_subject；同类候选交给后续定位确认。"
+      "rule": "一次自动执行只处理一个主体。用户不需要说“保留”或字段名；从句子中提取承受动作或被指代的可见对象。只输入主体时使用全默认值生成选区；“这个/那个/它”可结合图像反推单一显著主体，多个合理候选交给后续定位确认。文字中完全没有主体或对象指代时才返回 needs_input/missing_subject。"
     },
     {
       "id": "policy.non_generative",
@@ -45,7 +45,7 @@
       "id": "background.transparent",
       "aliases": ["透明背景", "背景透明", "透明底", "透明png", "透明 png", "去背景", "背景去除", "移除背景", "抠图", "抠出主体", "抠出商品", "只保留商品", "只保留物品", "背景变透明", "透明的背景", "去背", "无背景", "去掉背景", "去除背景", "抠掉背景", "抠出来", "扣出来", "只留人物", "只留主体"],
       "scope": "automatic",
-      "rule": "导出透明背景时使用 background.mode=transparent，background.blur_px 必须为 0；这不是删除主体或补全背景。"
+      "rule": "用户明确说抠图、抠出来、去背、去除背景或透明背景时，使用 background.mode=transparent，background.blur_px 必须为 0；这不是删除主体或补全背景。否定语句如“不要抠图”不能启用透明背景。"
     },
     {
       "id": "background.color",
@@ -94,7 +94,7 @@
         "底色用白色"
       ],
       "scope": "automatic",
-      "rule": "更换为明确的纯色背景时使用 background.mode=color，并把颜色转换为 #RRGGBB；background.blur_px 必须为 0。无法从文字确定颜色时返回 needs_input。"
+      "rule": "更换为纯色背景时使用 background.mode=color，并把颜色转换为 #RRGGBB；background.blur_px 必须为 0。用户只要求干净纯色底而没有给出颜色时，保守使用中性白色 #ffffff。"
     },
     {
       "id": "background.blur",
@@ -166,7 +166,7 @@
       "id": "subject.opacity",
       "aliases": ["主体半透明", "主体透明一点", "降低主体不透明度", "淡化主体", "主体若隐若现"],
       "scope": "automatic",
-      "rule": "可设置 subject.opacity（0 到 100）。低于 100 时必须同时使用透明、纯色或虚化背景；保留原背景时返回 needs_input 和 opacity_requires_background。"
+      "rule": "可设置 subject.opacity（0 到 100）。低于 100 时必须同时使用透明、纯色或虚化背景；用户没有指定兼容背景时，保守改用透明背景，不追加追问。"
     },
     {
       "id": "effect.outline",
